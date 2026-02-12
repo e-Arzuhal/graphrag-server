@@ -23,6 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.utils.db import neo4j_driver
 from app.api.routes.contract import router as contract_router
+from app.api.routes.graphrag import router as graphrag_router
 
 
 @asynccontextmanager
@@ -93,6 +94,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(contract_router, prefix="/api/v1")
+app.include_router(graphrag_router, prefix="/api/v1")
 
 
 @app.get(
