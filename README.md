@@ -511,6 +511,31 @@ dependencies = [
 ]
 ```
 
+## 🔗 Main Server Entegrasyonu
+
+GraphRAG server, main-server (Spring Boot, :8080) tarafından `POST /api/v1/analyze/input` endpoint'i üzerinden çağrılır.
+
+**Akış:**
+```
+Client → Main Server (:8080) → NLP Server (:8001) → Main Server → GraphRAG Server (:8000) → Main Server → Client
+```
+
+Main server'daki ilgili sınıflar:
+- `GraphRagService.java` - WebClient ile bu sunucuyu çağırır
+- `AnalysisService.java` - NLP + GraphRAG orchestration
+- `ContractTypeMapping.java` - İngilizce enum ↔ Türkçe snake_case dönüşümü
+
+**Sözleşme Tipi Uyumu:**
+
+| Main Server (enum) | GraphRAG (snake_case) |
+|---------------------|----------------------|
+| SALES | satis_sozlesmesi |
+| RENTAL | kira_sozlesmesi |
+| SERVICE | hizmet_sozlesmesi |
+| EMPLOYMENT | is_sozlesmesi |
+
+> **Not:** `is_sozlesmesi` (EMPLOYMENT) tipi henüz GraphRAG knowledge graph'ında tanımlı değil. İleride eklenmesi gerekiyor.
+
 ## 📝 Lisans
 
 MIT License
