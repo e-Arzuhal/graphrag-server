@@ -7,10 +7,8 @@ from fastapi import APIRouter, HTTPException, status
 from app.models.response.graphrag import (
     AnalyzeInputRequest,
 )
-from app.services.contract_generator import (
-    get_contract_generator,
-    ContractType
-)
+from app.services.contract_generator import get_contract_generator
+from app.services.contract_types import ContractType
 
 
 router = APIRouter(
@@ -119,4 +117,3 @@ async def analyze_input(request: AnalyzeInputRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error analyzing input: {str(e)}"
         )
-

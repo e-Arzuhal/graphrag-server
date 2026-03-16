@@ -16,14 +16,18 @@ from dataclasses import dataclass, field
 from enum import Enum
 import json
 from app.utils.db import neo4j_driver
+from app.services.legal_analysis_service import get_legal_analysis_service
 
 
 class ContractType(Enum):
     """Supported contract types in the system."""
     HIZMET_SOZLESMESI = "hizmet_sozlesmesi"
-    KIRA_SOZLESMESI = "kira_sozlesmesi"
-    SATIS_SOZLESMESI = "satis_sozlesmesi"
-    BORC_SOZLESMESI = "borc_sozlesmesi"
+    KIRA_SOZLESMESI   = "kira_sozlesmesi"
+    SATIS_SOZLESMESI  = "satis_sozlesmesi"
+    BORC_SOZLESMESI   = "borc_sozlesmesi"
+    IS_SOZLESMESI     = "is_sozlesmesi"
+    VEKALETNAME       = "vekaletname"
+    TAAHHUTNAME       = "taahhutname"
 
 
 class NecessityLevel(Enum):
@@ -755,37 +759,62 @@ class ContractGenerator:
     def analyze_user_input(
         self,
         contract_type: str,
-        extracted_entities: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        extracted_entities: dict
+    ) -> dict:
         """
         Main entry point for analyzing user input.
-        
+    
         Combines all steps:
         1. Fetch contract requirements from Neo4j
         2. Run agentic reasoning on extracted entities
         3. Generate proactive suggestions
-        
+        4. Enrich with legal analysis (law articles, compliance score, conflicts)
+    
         Args:
             contract_type: Contract type identifier
-            extracted_entities: Entities extracted from user input by spaCy
-        
+            extracted_entities: Entities extracted from user input by NLP
+    
         Returns:
-            Complete analysis result with suggestions in JSON format
+            Complete analysis result with suggestions and legal references
         """
         # Step 1: Fetch requirements from graph
         graph_data = self.fetch_contract_requirements(contract_type)
-        
+    
         # Step 2: Run reasoning engine
         analysis = self.agentic_reasoning_engine(extracted_entities, graph_data)
-        
+    
         # Step 3: Generate suggestions
         suggestions = self.generate_proactive_suggestions(analysis)
-        
-        # Combine all results
+    
+        # Step 4: Legal analysis — kanun maddeleri, compliance score, conflict detection
+        # matched_fields listesinden alan adlarını çıkar
+        analysis_dict = analysis.to_dict()
+        matched_field_names = [f["name"] for f in analysis_dict.get("matched_fields", [])]
+        legal_analysis = {}
+        try:
+            legal_service = get_legal_analysis_service()
+            legal_analysis = legal_service.analyze_contract(
+                contract_type=contract_type,
+                clauses=matched_field_names,
+                completeness_score=analysis_dict.get("completeness_score"),
+            )
+        except Exception as e:
+            # Legal analysis opsiyonel — hata olursa ana akışı kesmez
+            legal_analysis = {
+                "error": str(e),
+                "related_articles": [],
+                "completeness_score": None,
+                "compliance_score": 0,
+                "potential_conflicts": [],
+                "missing_required_fields": [],
+            }
+
+        # graph_data response'a dahil edilmiyor:
+        # requires/recommended/optional zaten analysis bloğunda var
         return {
-            "analysis": analysis.to_dict(),
-            "suggestions": suggestions,
-            "graph_data": graph_data
+            "analysis":       analysis_dict,
+            "suggestions":    suggestions,
+            "legal_analysis": legal_analysis,
         }
     
     def to_json(self, data: Dict[str, Any], pretty: bool = True) -> str:
