@@ -2,17 +2,12 @@
 GraphRAG API routes module.
 Defines FastAPI endpoints for contract analysis and suggestion generation.
 """
-from typing import Dict, Any
 from fastapi import APIRouter, HTTPException, status
 
 from app.models.response.graphrag import (
     AnalyzeInputRequest,
-    ContractRequirementsDTO,
-    FullAnalysisResponse,
-    SuggestionsResponseDTO
 )
 from app.services.contract_generator import (
-    ContractGenerator,
     get_contract_generator,
     ContractType
 )
@@ -44,71 +39,6 @@ def _validate_contract_type(contract_type: str) -> None:
             }
         )
 
-
-@router.get(
-    "/requirements/{contract_type}",
-    response_model=ContractRequirementsDTO,
-    summary="Get Contract Requirements",
-    description="""
-    Fetch all requirements for a specific contract type from the Neo4j knowledge graph.
-    
-    This endpoint queries the graph for:
-    - **REQUIRES** relationships (mandatory fields)
-    - **RECOMMENDED** relationships (suggested fields)
-    - **OPTIONAL** relationships (optional fields)
-    - **DEPENDS_ON** relationships (field dependencies)
-    
-    The response includes the complete requirement structure needed for
-    contract generation and validation.
-    
-    ### Supported Contract Types:
-    - `hizmet_sozlesmesi` - Hizmet Sözleşmesi
-    - `kira_sozlesmesi` - Kira Sözleşmesi
-    - `satis_sozlesmesi` - Satış Sözleşmesi
-    - `borc_sozlesmesi` - Borç Sözleşmesi
-    """,
-    responses={
-        200: {
-            "description": "Contract requirements retrieved successfully",
-            "content": {
-                "application/json": {
-                    "example": {
-                        "contract_type": "kira_sozlesmesi",
-                        "display_name": "Kira Sözleşmesi",
-                        "requires": [
-                            {"node_id": 7, "name": "Kiracı", "necessity": "REQUIRES"}
-                        ],
-                        "recommended": [],
-                        "optional": [],
-                        "dependencies": [],
-                        "field_mapping": {"7": "Kiracı", "8": "Kiraya Veren"}
-                    }
-                }
-            }
-        }
-    }
-)
-async def get_requirements(contract_type: str):
-    """
-    Get contract requirements from Neo4j graph.
-    
-    Args:
-        contract_type: Contract type identifier
-        
-    Returns:
-        ContractRequirementsDTO: All requirements for the contract type
-    """
-    _validate_contract_type(contract_type)
-    
-    try:
-        generator = get_contract_generator()
-        requirements = generator.fetch_contract_requirements(contract_type)
-        return requirements
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error fetching requirements: {str(e)}"
-        )
 
 
 @router.post(
@@ -190,87 +120,3 @@ async def analyze_input(request: AnalyzeInputRequest):
             detail=f"Error analyzing input: {str(e)}"
         )
 
-
-@router.get(
-    "/types",
-    summary="Get Supported Contract Types",
-    description="Get a list of all supported contract types with their display names.",
-    responses={
-        200: {
-            "description": "List of supported contract types",
-            "content": {
-                "application/json": {
-                    "example": [
-                        {"id": "kira_sozlesmesi", "display_name": "Kira Sözleşmesi"},
-                        {"id": "borc_sozlesmesi", "display_name": "Borç Sözleşmesi"}
-                    ]
-                }
-            }
-        }
-    }
-)
-async def get_contract_types():
-    """
-    Get all supported contract types.
-    
-    Returns:
-        List of contract types with IDs and display names
-    """
-    generator = get_contract_generator()
-    return [
-        {
-            "id": ct.value,
-            "display_name": generator._get_contract_display_name(ct.value),
-            "field_count": len(generator.CONTRACT_FIELD_MAPPING.get(ct.value, {}))
-        }
-        for ct in ContractType
-    ]
-
-
-@router.get(
-    "/field-mapping/{contract_type}",
-    summary="Get Field Mapping",
-    description="""
-    Get the node ID to field name mapping for a specific contract type.
-    
-    This is useful for debugging and understanding how Neo4j node IDs
-    map to human-readable field names.
-    """,
-    responses={
-        200: {
-            "description": "Field mapping retrieved successfully",
-            "content": {
-                "application/json": {
-                    "example": {
-                        "contract_type": "kira_sozlesmesi",
-                        "mapping": {
-                            "7": "Kiracı",
-                            "8": "Kiraya Veren",
-                            "9": "Mülk Adresi"
-                        }
-                    }
-                }
-            }
-        }
-    }
-)
-async def get_field_mapping(contract_type: str):
-    """
-    Get field mapping for a contract type.
-    
-    Args:
-        contract_type: Contract type identifier
-        
-    Returns:
-        Mapping of node IDs to field names
-    """
-    _validate_contract_type(contract_type)
-    
-    generator = get_contract_generator()
-    mapping = generator.CONTRACT_FIELD_MAPPING.get(contract_type, {})
-    
-    return {
-        "contract_type": contract_type,
-        "display_name": generator._get_contract_display_name(contract_type),
-        "mapping": {str(k): v for k, v in mapping.items()}
-    }
