@@ -17,13 +17,15 @@ class Settings(BaseSettings):
         app_name: Application name for FastAPI
         app_version: Application version
         debug: Debug mode flag
+        internal_api_key: The internal API key for securing communications
     """
-    neo4j_uri: str = "bolt://localhost:7687"
-    neo4j_user: str = "neo4j"
-    neo4j_password: str = "password"
+    neo4j_uri: str
+    neo4j_user: str
+    neo4j_password: str
     app_name: str = "e-Arzuhal GraphRAG API"
     app_version: str = "1.0.0"
     debug: bool = False
+    internal_api_key: str
 
     class Config:
         env_file = ".env"
