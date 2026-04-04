@@ -51,6 +51,7 @@ class LegalAnalysisService:
         self,
         contract_type: str,
         clauses: List[str],
+        completeness_score: Optional[float] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
@@ -107,7 +108,8 @@ class LegalAnalysisService:
             "contract_type":              contract_type,
             "display_name":               DISPLAY_NAMES.get(contract_type, contract_type),
             "related_articles":           [a.to_dict() for a in articles],
-            "compliance_score":           compliance_score,
+            "completeness_score":         completeness_score,   # NLP entity coverage (from ContractGenerator)
+            "compliance_score":           compliance_score,     # Legal field coverage (from this service)
             "potential_conflicts":        conflicts,
             "suggested_missing_articles": suggested,
             "missing_required_fields":    missing_required,

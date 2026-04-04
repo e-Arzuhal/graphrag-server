@@ -92,3 +92,5 @@ logs/
 
 # Local development
 *.local
+
+GRAPHRAG_SERVER.md

@@ -1,541 +1,324 @@
 # e-Arzuhal GraphRAG Server
 
-Neo4j bilgi grafiği kullanarak hukuki belge oluşturma için GraphRAG (Graph-based Retrieval-Augmented Generation) sunucusu.
+Neo4j bilgi grafiği ve Gemini LLM tabanlı Türk sözleşme analiz servisi.  
+NLP sunucusundan gelen spaCy entity verisini alır; eksik alanları, TBK ihlallerini ve hukuki riskleri tespit eder.
 
-## 🎯 Genel Bakış
+---
 
-Bu modül, e-Arzuhal sisteminin **akıl yürütme motoru**dur. NLP-Server'dan gelen entity'leri Neo4j'deki hukuki bilgi grafiğiyle karşılaştırarak:
-
-- Eksik zorunlu bilgileri tespit eder
-- Proaktif sorular/öneriler üretir
-- LLM'e beslenecek yapılandırılmış JSON çıktısı oluşturur
+## Genel Bakış
 
 ```
-┌─────────────┐     ┌──────────────────┐     ┌─────────────┐
-│  NLP-Server │ ──► │  GraphRAG-Server │ ──► │     LLM     │
-│   (spaCy)   │     │   (Bu Modül)     │     │ (Claude/GPT)│
-└─────────────┘     └──────────────────┘     └─────────────┘
+Main Server
+    │  POST /api/v1/analyze/input
+    │  { contract_type, extracted_entities (spaCy format) }
+    ▼
+GraphRAG Server
+    ├── 1. Gap Analysis          → eksik alanlar + completeness score
+    ├── 2. Validation Rules      → TBK kural ihlalleri (ör. deneme_suresi > 2 ay)
+    ├── 3. Decision Gate         → LLM gerekiyor mu?
+    ├── 4. Neo4j Query           → eksik alanlar için graph verisi (conditional)
+    ├── 5. Gemini 2.0 Flash      → hukuki risk analizi + TBK maddeleri (conditional)
+    └── 6. Response              → analiz + chatbot soruları + hukuki değerlendirme
+    ▼
+Main Server → UI
 ```
 
-## 🚀 Özellikler
+---
 
-- **Graf Tabanlı Gereksinim Analizi**: Neo4j'den sözleşme gereksinimlerini çeker
-- **Akıllı Entity Eşleştirme**: NLP çıktılarını graf gereksinimleriyle karşılaştırır
-- **Proaktif Soru Üretimi**: Eksik bilgiler için akıllı sorular oluşturur
-- **LLM-Ready JSON Çıktısı**: Doğrudan LLM'e beslenebilir format
-- **Modüler Mimari**: ContractGenerator sınıfı ile temiz kod yapısı
-- **Bolt Protokolü**: Neo4j bağlantısı için performanslı iletişim
+## Aktif Endpoint'ler
 
-## 📦 Kurulum
+| Method | Path | Açıklama |
+|--------|------|----------|
+| `POST` | `/api/v1/analyze/input` | Ana analiz endpoint'i |
+| `POST` | `/api/v1/legal-analysis/contract-legal-analysis` | Kanun maddesi karşılaştırması |
+| `GET`  | `/api/v1/legal-analysis/contract-graph/{type}` | Sözleşme graph yapısı |
+| `GET`  | `/api/v1/legal-analysis/contract-types` | Desteklenen sözleşme tipleri |
+| `GET`  | `/` | Servis durumu |
+| `GET`  | `/health` | Neo4j bağlantı durumu |
+
+---
+
+## Desteklenen Sözleşme Tipleri
+
+`is_sozlesmesi` · `kira_sozlesmesi` · `satis_sozlesmesi` · `hizmet_sozlesmesi` · `vekaletname` · `taahhutname` · `kefalet_sozlesmesi`
+
+---
+
+## Proje Yapısı
+
+```
+graphrag-server/
+├── app/
+│   ├── main.py                          # FastAPI app, CORS, lifespan
+│   ├── config.py                        # Pydantic settings (.env okuma)
+│   ├── api/
+│   │   └── routes/
+│   │       ├── graphrag.py              # POST /api/v1/analyze/input
+│   │       └── legal_analysis.py        # /api/v1/legal-analysis/*
+│   ├── data/                            # Statik veri katmanı (Neo4j gerektirmez)
+│   │   ├── contract_schemas.py          # Sözleşme tipi başına zorunlu/opsiyonel alanlar
+│   │   ├── field_tbk_mapping.py         # Alan → TBK maddesi + Neo4j keyword + risk seviyesi
+│   │   └── question_templates.py        # Chatbot soruları
+│   ├── services/
+│   │   ├── gap_analysis_service.py      # spaCy entity → semantik alan eşleme + skor
+│   │   ├── validation_service.py        # TBK kural kontrolleri
+│   │   ├── neo4j_service.py             # Alan bazlı graph verisi çekme (async)
+│   │   ├── gemini_service.py            # Gemini 2.0 Flash entegrasyonu
+│   │   ├── legal_analysis_service.py    # /legal-analysis endpoint'leri için
+│   │   ├── contract_generator.py        # Eski GraphRAG reasoning motoru (korunuyor)
+│   │   └── contract_types.py            # ContractType enum + fallback veriler
+│   ├── models/
+│   │   └── response/
+│   │       ├── graphrag.py              # AnalyzeInputRequest ve DTO'lar
+│   │       └── contract.py              # Sözleşme DTO'ları
+│   ├── db/
+│   │   └── repositories/
+│   │       └── contract_repository.py   # Neo4j sorguları (legal_analysis için)
+│   └── utils/
+│       └── db.py                        # Neo4j singleton driver
+└── tests/
+    └── test_analyze_pipeline.py         # 25 test (unit + integration)
+```
+
+---
+
+## Pipeline Detayları
+
+### 1. Gap Analysis — `app/services/gap_analysis_service.py`
+
+spaCy entity listelerini semantik alan adlarına dönüştürür.
+
+```
+PERSON[0] + ORG[0]  →  taraf_isci / taraf_isveren
+MONEY               →  ucret / kira_bedeli / satis_bedeli
+DATE[0]             →  baslangic_tarihi
+LOC                 →  calisma_yeri / kiralanan_adres
+CARDINAL "ay"       →  deneme_suresi
+CARDINAL "hafta"    →  ihbar_suresi
+```
+
+Çıktı: `present`, `missing_required`, `missing_optional`, `completeness_score`
+
+### 2. Validation — `app/services/validation_service.py`
+
+| Kural | TBK Maddesi |
+|-------|-------------|
+| `deneme_suresi > 2 ay` | TBK m.393 |
+| `ihbar_suresi < 2 hafta` | TBK m.432 |
+
+### 3. Neo4j — `app/services/neo4j_service.py`
+
+Eksik alanların `neo4j_keywords` değerleriyle (`field_tbk_mapping.py`) graph'ta eşleşen düğüm ve ilişkileri çeker.  
+Mevcut sync driver, `asyncio.run_in_executor` ile async uyumlu hale getirilmiştir.
+
+### 4. Gemini — `app/services/gemini_service.py`
+
+Model: `gemini-2.0-flash`  
+Prompt içeriği:
+- TBK graph schema (node ve ilişki tipleri)
+- Eksik/mevcut alanlar
+- Validation hataları
+- Neo4j graph verisi
+
+Çıktı: `tbk_articles`, `risks[]`, `general_assessment`, `compliance_penalty`  
+Gemini başarısız olursa fallback ile her eksik zorunlu alan için HIGH risk döner.
+
+---
+
+## POST /api/v1/analyze/input
+
+### İstek
+
+```json
+{
+  "contract_type": "is_sozlesmesi",
+  "extracted_entities": {
+    "PERSON":   ["Ahmet Yılmaz"],
+    "ORG":      ["ABC A.Ş."],
+    "MONEY":    ["25.000 TL"],
+    "DATE":     ["01.03.2025"],
+    "LOC":      [],
+    "CARDINAL": ["2 ay"],
+    "PERCENT":  []
+  }
+}
+```
+
+### Yanıt
+
+```json
+{
+  "analysis": {
+    "contract_type":      "is_sozlesmesi",
+    "completeness_score": 67.0,
+    "compliance_score":   52.0,
+    "needs_llm_analysis": true,
+    "matched_fields":     ["taraf_isci", "taraf_isveren", "ucret", "baslangic_tarihi", "deneme_suresi"],
+    "missing_required":   ["is_tanimi", "calisma_yeri"],
+    "missing_optional":   ["sure", "ihbar_suresi", "bitis_tarihi"],
+    "validation_errors":  []
+  },
+  "suggestions": {
+    "status":      "incomplete",
+    "next_action": "Çalışanın pozisyonu ve görev tanımı nedir?",
+    "chatbot_questions": [
+      { "priority": 1, "field": "is_tanimi",   "question": "Çalışanın pozisyonu ve görev tanımı nedir?", "required": true },
+      { "priority": 2, "field": "calisma_yeri","question": "İş yerinin adresi nedir?", "required": true },
+      { "priority": 3, "field": "sure",        "question": "Sözleşmenin süresi nedir?", "required": false }
+    ]
+  },
+  "legal_analysis": {
+    "tbk_articles": [393, 419],
+    "risks": [
+      {
+        "field":       "is_tanimi",
+        "risk_level":  "HIGH",
+        "tbk_article": 393,
+        "explanation": "İş tanımı eksik olduğunda işverenin yükümlülükleri belirsiz kalır.",
+        "suggestion":  "Pozisyon ve görev tanımını sözleşmeye ekleyin."
+      }
+    ],
+    "general_assessment": "Sözleşmede 2 zorunlu alan eksik...",
+    "compliance_penalty": 0.15
+  },
+  "graph_data": {}
+}
+```
+
+### Hata Durumları
+
+| Kod | Sebep |
+|-----|-------|
+| `400` | Geçersiz `contract_type` |
+| `500` | Sunucu hatası |
+
+---
+
+## POST /api/v1/legal-analysis/contract-legal-analysis
+
+> Header: `X-Internal-API-Key: <INTERNAL_API_KEY>`  
+> Yalnızca Main Server (Java) tarafından çağrılır.
+
+### İstek
+
+```json
+{
+  "contract_type": "kira_sozlesmesi",
+  "clauses": ["Kiracı", "Kiraya Veren", "Kira Bedeli", "Mülk Adresi"],
+  "metadata": { "source": "main-server" }
+}
+```
+
+### Yanıt
+
+```json
+{
+  "contract_type":    "kira_sozlesmesi",
+  "display_name":     "Kira Sözleşmesi",
+  "related_articles": [
+    {
+      "article_id":    "TBK-299",
+      "law_name":      "Türk Borçlar Kanunu",
+      "article_number":"Madde 299",
+      "summary":       "Kira sözleşmesinin tanımı...",
+      "relevance_score": 1.0
+    }
+  ],
+  "compliance_score":           66.7,
+  "potential_conflicts":        [],
+  "suggested_missing_articles": ["'Süre' alanı için ilgili kanun maddelerini inceleyin."],
+  "missing_required_fields":    ["Süre"]
+}
+```
+
+---
+
+## Kurulum
 
 ### Gereksinimler
 
 - Python 3.10+
-- Neo4j 5.x (lokal veya Docker)
-- NLP-Server (spaCy entity extraction için)
+- Neo4j 5.x
+- Gemini API key (google.ai üzerinden)
 
-### Kurulum
+### Paket Kurulumu
 
 ```bash
-cd graphrag-server
+conda activate arzuhal
 pip install -e .
+pip install -e ".[dev]"   # testler için
 ```
 
-### Ortam Değişkenleri
-
-```bash
-cp env.example .env
-# .env dosyasını Neo4j bilgilerinizle düzenleyin
-```
+### `.env` Yapılandırması
 
 ```env
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=your_password
+
+APP_NAME=e-Arzuhal GraphRAG API
+APP_VERSION=1.0.0
+DEBUG=true
+
+INTERNAL_API_KEY=your_internal_key
+GEMINI_API_KEY=your_gemini_api_key
+
+ALLOWED_ORIGINS=http://localhost:3000,http://localhost:19006
 ```
 
-### Sunucuyu Başlatma
+### Çalıştırma
 
 ```bash
 uvicorn app.main:app --reload --port 8000
 ```
 
-### Docker
+`DEBUG=true` iken dokümantasyon açılır:
+- `http://localhost:8000/docs`
+- `http://localhost:8000/redoc`
+
+---
+
+## Test
 
 ```bash
-docker build -t graphrag-server .
-docker run -p 8000:8000 \
-  -e NEO4J_URI=bolt://host.docker.internal:7687 \
-  -e NEO4J_USER=neo4j \
-  -e NEO4J_PASSWORD=your_password \
-  graphrag-server
-```
-
-## 🗺️ Schema Mapping (Node ID → Alan Adı)
-
-Veritabanındaki sayısal ID'lerin alan adlarıyla eşleşmesi:
-
-### Borç Sözleşmesi (IDs: 1-5)
-| Node ID | Alan Adı |
-|---------|----------|
-| 1 | Tutar |
-| 2 | Para Birimi |
-| 3 | Tarih |
-| 4 | Alacaklı |
-| 5 | Borçlu |
-
-### Kira Sözleşmesi (IDs: 7-14)
-| Node ID | Alan Adı |
-|---------|----------|
-| 7 | Kiracı |
-| 8 | Kiraya Veren |
-| 9 | Mülk Adresi |
-| 10 | Kira Bedeli |
-| 11 | Ödeme Günü |
-| 12 | Depozito |
-| 13 | Artış Oranı |
-| 14 | Süre |
-
-### Hizmet Sözleşmesi (IDs: 16-22)
-| Node ID | Alan Adı |
-|---------|----------|
-| 16 | İş Sahibi |
-| 17 | Hizmet Veren |
-| 18 | İşin Kapsamı |
-| 19 | Ücret |
-| 20 | Teslim Tarihi |
-| 21 | Gizlilik |
-| 22 | Fesih |
-
-### Satış Sözleşmesi (IDs: 24-30)
-| Node ID | Alan Adı |
-|---------|----------|
-| 24 | Satıcı |
-| 25 | Alıcı |
-| 26 | Mal/Ürün |
-| 27 | Satış Bedeli |
-| 28 | Teslimat |
-| 29 | Ödeme Yöntemi |
-| 30 | Garanti |
-
-## 🧠 Business Logic
-
-### ContractGenerator Sınıfı
-
-Ana iş mantığı `app/services/contract_generator.py` içindeki `ContractGenerator` sınıfında:
-
-#### 1. `fetch_contract_requirements(contract_type)`
-
-Neo4j'den sözleşme gereksinimlerini çeker:
-
-```python
-# Cypher sorgusu REQUIRES, RECOMMENDED, OPTIONAL ve DEPENDS_ON ilişkilerini getirir
-requirements = generator.fetch_contract_requirements("kira_sozlesmesi")
-```
-
-**Çıktı:**
-```json
-{
-  "contract_type": "kira_sozlesmesi",
-  "display_name": "Kira Sözleşmesi",
-  "requires": [{"node_id": 7, "name": "Kiracı", "necessity": "REQUIRES"}],
-  "recommended": [{"node_id": 12, "name": "Depozito"}],
-  "optional": [],
-  "dependencies": [{"from_id": 10, "to_id": 11}]
-}
-```
-
-#### 2. `agentic_reasoning_engine(extracted_entities, graph_data)`
-
-NLP-Server'dan gelen entity'leri graf gereksinimleriyle karşılaştırır:
-
-```python
-# NLP-Server'dan gelen entity'ler
-extracted_entities = {
-    "PERSON": ["Ahmet Yılmaz", "Mehmet Demir"],
-    "MONEY": ["5000 TL"],
-    "LOC": ["Kadıköy, İstanbul"]
-}
-
-# Analiz
-analysis = generator.agentic_reasoning_engine(extracted_entities, requirements)
-```
-
-**Çıktı:**
-```json
-{
-  "matched_fields": ["Kiracı", "Kiraya Veren", "Kira Bedeli", "Mülk Adresi"],
-  "missing_required": ["Ödeme Günü", "Süre"],
-  "missing_recommended": ["Depozito", "Artış Oranı"],
-  "completeness_score": 66.67
-}
-```
-
-#### 3. `generate_proactive_suggestions()`
-
-Eksik bilgiler için sorular/hatırlatmalar üretir:
-
-```python
-suggestions = generator.generate_proactive_suggestions(analysis)
-```
-
-**Çıktı:**
-```json
-{
-  "status": "incomplete",
-  "suggestions": [
-    {
-      "type": "question",
-      "field_name": "Ödeme Günü",
-      "message": "Kira ödemesi ayın kaçında yapılacak?",
-      "priority": 1,
-      "necessity": "required"
-    },
-    {
-      "type": "reminder",
-      "field_name": "Depozito",
-      "message": "Depozito belirlemeniz tavsiye edilir.",
-      "priority": 2,
-      "necessity": "recommended"
-    }
-  ],
-  "next_action": "Kullanıcıya şu soruyu sor: Kira ödemesi ayın kaçında yapılacak?",
-  "llm_prompt": "## Sözleşme Analiz Raporu: Kira Sözleşmesi\n..."
-}
-```
-
-### Entity → Alan Eşleştirme Mantığı
-
-| spaCy Entity | Eşleşen Alanlar (Kira Sözleşmesi) |
-|--------------|-----------------------------------|
-| PERSON | Kiracı, Kiraya Veren |
-| ORG | Kiracı, Kiraya Veren |
-| MONEY | Kira Bedeli, Depozito |
-| LOC | Mülk Adresi |
-| DATE | Ödeme Günü |
-| CARDINAL | Ödeme Günü, Süre |
-| PERCENT | Artış Oranı |
-
-## 📖 API Endpoints
-
-### Sağlık Kontrolleri
-
-| Method | Endpoint | Açıklama |
-|--------|----------|----------|
-| GET | `/` | Basit sağlık kontrolü |
-| GET | `/health` | Detaylı sağlık durumu (Neo4j dahil) |
-
-### Sözleşme Şablonları
-
-| Method | Endpoint | Açıklama |
-|--------|----------|----------|
-| GET | `/api/v1/template/` | Tüm sözleşme tiplerini listele |
-| GET | `/api/v1/template/{contract_type}` | Sözleşme şablonunu getir |
-
-### GraphRAG Analiz (Yeni)
-
-| Method | Endpoint | Açıklama |
-|--------|----------|----------|
-| GET | `/api/v1/analyze/types` | Desteklenen sözleşme tiplerini listele |
-| GET | `/api/v1/analyze/requirements/{contract_type}` | Graf gereksinimlerini getir |
-| GET | `/api/v1/analyze/field-mapping/{contract_type}` | Alan eşlemelerini getir |
-| POST | `/api/v1/analyze/input` | Kullanıcı girdisini analiz et |
-
-### Kullanım Örnekleri
-
-#### Sözleşme Gereksinimlerini Getir
-
-```bash
-curl http://localhost:8000/api/v1/analyze/requirements/kira_sozlesmesi
-```
-
-#### Kullanıcı Girdisini Analiz Et
-
-```bash
-curl -X POST http://localhost:8000/api/v1/analyze/input \
-  -H "Content-Type: application/json" \
-  -d '{
-    "contract_type": "kira_sozlesmesi",
-    "extracted_entities": {
-      "PERSON": ["Ahmet Yılmaz", "Mehmet Demir"],
-      "MONEY": ["5000 TL", "15000 TL"],
-      "LOC": ["Kadıköy Moda Caddesi No:15"]
-    }
-  }'
-```
-
-#### Örnek API Yanıtı
-
-```json
-{
-  "analysis": {
-    "contract_type": "kira_sozlesmesi",
-    "completeness_score": 62.5,
-    "matched_fields": [
-      {"node_id": 7, "name": "Kiracı", "necessity": "REQUIRES"},
-      {"node_id": 8, "name": "Kiraya Veren", "necessity": "REQUIRES"},
-      {"node_id": 10, "name": "Kira Bedeli", "necessity": "REQUIRES"},
-      {"node_id": 12, "name": "Depozito", "necessity": "RECOMMENDED"},
-      {"node_id": 9, "name": "Mülk Adresi", "necessity": "REQUIRES"}
-    ],
-    "missing_required": [
-      {"node_id": 11, "name": "Ödeme Günü", "necessity": "REQUIRES"},
-      {"node_id": 14, "name": "Süre", "necessity": "REQUIRES"}
-    ],
-    "missing_recommended": [
-      {"node_id": 13, "name": "Artış Oranı", "necessity": "RECOMMENDED"}
-    ]
-  },
-  "suggestions": {
-    "status": "incomplete",
-    "completeness_score": 62.5,
-    "suggestions": [
-      {
-        "type": "question",
-        "field_name": "Ödeme Günü",
-        "message": "Kira ödemesi ayın kaçında yapılacak?",
-        "priority": 1,
-        "necessity": "required"
-      },
-      {
-        "type": "question",
-        "field_name": "Süre",
-        "message": "Kira sözleşmesinin süresi ne kadar?",
-        "priority": 1,
-        "necessity": "required"
-      },
-      {
-        "type": "reminder",
-        "field_name": "Artış Oranı",
-        "message": "Yıllık kira artış oranı belirlemek faydalı olabilir.",
-        "priority": 2,
-        "necessity": "recommended"
-      }
-    ],
-    "next_action": "Kullanıcıya şu soruyu sor: Kira ödemesi ayın kaçında yapılacak?",
-    "llm_prompt": "## Sözleşme Analiz Raporu: Kira Sözleşmesi\n\n**Tamamlanma Oranı:** %62.5\n**Durum:** incomplete\n\n### Tespit Edilen Bilgiler:\n- ✓ Kiracı\n- ✓ Kiraya Veren\n- ✓ Kira Bedeli\n- ✓ Mülk Adresi\n- ✓ Depozito\n\n### Eksik Zorunlu Bilgiler:\n- ✗ Ödeme Günü (ZORUNLU)\n- ✗ Süre (ZORUNLU)\n\n### Eksik Önerilen Bilgiler:\n- ○ Artış Oranı (ÖNERİLEN)\n\n### Yapılacak İşlemler:\n\n**Sorulacak Sorular:**\n1. Kira ödemesi ayın kaçında yapılacak?\n2. Kira sözleşmesinin süresi ne kadar?\n\n**Hatırlatmalar:**\n- Yıllık kira artış oranı belirlemek faydalı olabilir.\n\n### Talimatlar:\nEksik zorunlu bilgileri kullanıcıdan sırayla talep et.\nHer seferinde tek bir soru sor ve cevabı bekle."
-  },
-  "graph_data": {
-    "contract_type": "kira_sozlesmesi",
-    "display_name": "Kira Sözleşmesi",
-    "requires": [...],
-    "recommended": [...],
-    "optional": [],
-    "dependencies": [],
-    "field_mapping": {"7": "Kiracı", "8": "Kiraya Veren", ...}
-  }
-}
-```
-
-## 🗂️ Proje Yapısı
-
-```
-graphrag-server/
-├── app/
-│   ├── api/
-│   │   └── routes/
-│   │       ├── contract.py      # Sözleşme şablon endpoint'leri
-│   │       └── graphrag.py      # GraphRAG analiz endpoint'leri (YENİ)
-│   ├── db/
-│   │   └── repositories/
-│   │       └── contract_repository.py
-│   ├── models/
-│   │   ├── request/
-│   │   └── response/
-│   │       ├── contract.py      # ClauseDTO, ContractTemplateResponse
-│   │       └── graphrag.py      # GraphRAG response modelleri (YENİ)
-│   ├── services/
-│   │   ├── contract_service.py
-│   │   ├── contract_generator.py # ContractGenerator sınıfı (YENİ)
-│   │   └── exceptions.py
-│   ├── utils/
-│   │   └── db.py               # Neo4j driver singleton
-│   ├── config.py
-│   └── main.py
-├── tests/
-├── .env
-├── env.example
-├── pyproject.toml
-├── Dockerfile
-└── README.md
-```
-
-## 📊 Neo4j Graf Şeması
-
-### Düğümler (Nodes)
-
-- **ContractType**: `{name: string, display_name: string}`
-- **Field**: `{id: int, name: string, description: string}`
-- **Clause**: `{id: string, text_template: string}`
-
-### İlişkiler (Relationships)
-
-```
-(:ContractType)-[:REQUIRES]->(:Field)      # Zorunlu alanlar
-(:ContractType)-[:RECOMMENDED]->(:Field)   # Önerilen alanlar
-(:ContractType)-[:OPTIONAL]->(:Field)      # İsteğe bağlı alanlar
-(:Field)-[:DEPENDS_ON]->(:Field)           # Alan bağımlılıkları
-(:ContractType)-[:REQUIRES]->(:Clause)     # Zorunlu maddeler
-(:ContractType)-[:INCLUDES]->(:Clause)     # İsteğe bağlı maddeler
-```
-
-### Örnek Veri Kurulumu
-
-```cypher
-// Kira sözleşmesi ve alanlarını oluştur
-CREATE (c:ContractType {name: 'kira_sozlesmesi', display_name: 'Kira Sözleşmesi'})
-
-CREATE (f1:Field {id: 7, name: 'Kiracı', description: 'Kiracının tam adı'})
-CREATE (f2:Field {id: 8, name: 'Kiraya Veren', description: 'Mal sahibinin adı'})
-CREATE (f3:Field {id: 9, name: 'Mülk Adresi', description: 'Kiralanacak mülkün adresi'})
-CREATE (f4:Field {id: 10, name: 'Kira Bedeli', description: 'Aylık kira tutarı'})
-CREATE (f5:Field {id: 11, name: 'Ödeme Günü', description: 'Ödeme yapılacak gün'})
-CREATE (f6:Field {id: 12, name: 'Depozito', description: 'Depozito tutarı'})
-CREATE (f7:Field {id: 13, name: 'Artış Oranı', description: 'Yıllık kira artış oranı'})
-CREATE (f8:Field {id: 14, name: 'Süre', description: 'Sözleşme süresi'})
-
-// Zorunlu ilişkiler
-MATCH (c:ContractType {name: 'kira_sozlesmesi'}), (f:Field {id: 7})
-CREATE (c)-[:REQUIRES]->(f)
-
-MATCH (c:ContractType {name: 'kira_sozlesmesi'}), (f:Field {id: 8})
-CREATE (c)-[:REQUIRES]->(f)
-
-MATCH (c:ContractType {name: 'kira_sozlesmesi'}), (f:Field {id: 9})
-CREATE (c)-[:REQUIRES]->(f)
-
-MATCH (c:ContractType {name: 'kira_sozlesmesi'}), (f:Field {id: 10})
-CREATE (c)-[:REQUIRES]->(f)
-
-MATCH (c:ContractType {name: 'kira_sozlesmesi'}), (f:Field {id: 11})
-CREATE (c)-[:REQUIRES]->(f)
-
-MATCH (c:ContractType {name: 'kira_sozlesmesi'}), (f:Field {id: 14})
-CREATE (c)-[:REQUIRES]->(f)
-
-// Önerilen ilişkiler
-MATCH (c:ContractType {name: 'kira_sozlesmesi'}), (f:Field {id: 12})
-CREATE (c)-[:RECOMMENDED]->(f)
-
-MATCH (c:ContractType {name: 'kira_sozlesmesi'}), (f:Field {id: 13})
-CREATE (c)-[:RECOMMENDED]->(f)
-
-// Bağımlılık: Kira Bedeli → Ödeme Günü
-MATCH (f1:Field {id: 10}), (f2:Field {id: 11})
-CREATE (f1)-[:DEPENDS_ON]->(f2)
-```
-
-## 🔄 Sistem Akışı
-
-```
-                         ┌─────────────────────────────────────────┐
-                         │           KULLANICI GİRİŞİ              │
-                         │  "Ahmet Yılmaz ile Mehmet Demir         │
-                         │   arasında 5000 TL'lik kira sözleşmesi" │
-                         └────────────────────┬────────────────────┘
-                                              │
-                                              ▼
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                              NLP-SERVER                                       │
-│                         (Ayrı modül - spaCy)                                 │
-│                                                                              │
-│  extracted_entities = {                                                      │
-│    "PERSON": ["Ahmet Yılmaz", "Mehmet Demir"],                              │
-│    "MONEY": ["5000 TL"]                                                      │
-│  }                                                                           │
-└──────────────────────────────────────┬───────────────────────────────────────┘
-                                       │
-                                       ▼
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                           GRAPHRAG-SERVER                                     │
-│                            (Bu Modül)                                        │
-├──────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  1. fetch_contract_requirements("kira_sozlesmesi")                          │
-│     └── Neo4j'den: REQUIRES, RECOMMENDED, OPTIONAL, DEPENDS_ON              │
-│                                                                              │
-│  2. agentic_reasoning_engine(extracted_entities, graph_data)                │
-│     └── Entity → Alan eşleştirmesi                                          │
-│     └── Eksik alan tespiti                                                  │
-│     └── Tamamlanma skoru hesaplama                                          │
-│                                                                              │
-│  3. generate_proactive_suggestions()                                        │
-│     └── Eksik zorunlu alanlar için SORU üret                                │
-│     └── Eksik önerilen alanlar için HATIRLATMA üret                         │
-│     └── LLM-ready prompt oluştur                                            │
-│                                                                              │
-└──────────────────────────────────────┬───────────────────────────────────────┘
-                                       │
-                                       ▼
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                              LLM (Claude/GPT)                                 │
-│                                                                              │
-│  Alınan JSON ile:                                                            │
-│  - Tespit edilen bilgileri doğrular                                         │
-│  - Eksik bilgiler için kullanıcıya soru sorar                               │
-│  - Sözleşme taslağını hazırlar                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
-
-## 🧪 Test
-
-```bash
-# Dev bağımlılıklarını yükle
-pip install -e ".[dev]"
-
-# Testleri çalıştır
 pytest
-
-# Belirli testi çalıştır
-pytest tests/test_contract_api.py -v
 ```
 
-## 📚 API Dokümantasyonu
-
-Sunucu çalışırken:
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
-- OpenAPI JSON: http://localhost:8000/openapi.json
-
-## 🔧 Bağımlılıklar
-
-```toml
-dependencies = [
-    "fastapi>=0.109.0",
-    "uvicorn[standard]>=0.27.0",
-    "pydantic>=2.5.0",
-    "pydantic-settings>=2.1.0",
-    "neo4j>=5.15.0",
-    "python-dotenv>=1.0.0",
-    "spacy>=3.7.0",
-]
+```
+25 passed in 1.78s
 ```
 
-## 🔗 Main Server Entegrasyonu
+Test kapsamı:
+- `TestGapAnalysisService` — 8 unit test (alan eşleme, skor hesaplama, LLM karar kapısı)
+- `TestValidationService` — 7 unit test (TBK kural ihlalleri)
+- `TestAnalyzeInputEndpoint` — 8 integration test (Neo4j ve Gemini mock'lu)
+- `TestHealthEndpoints` — 2 test
 
-GraphRAG server, main-server (Spring Boot, :8080) tarafından `POST /api/v1/analyze/input` endpoint'i üzerinden çağrılır.
+---
 
-**Akış:**
+## Neo4j Veri Modeli
+
+Beklenen düğüm ve ilişkiler (`legal_analysis` servisi için):
+
 ```
-Client → Main Server (:8080) → NLP Server (:8001) → Main Server → GraphRAG Server (:8000) → Main Server → Client
+(:ContractType {name, display_name})
+(:Field {name, description})
+(:LegalArticle {article_id, law_name, article_number, summary, ...})
+
+(:ContractType)-[:REQUIRES]->(:Field)
+(:ContractType)-[:RECOMMENDED]->(:Field)
+(:ContractType)-[:OPTIONAL]->(:Field)
+(:Field)-[:DEPENDS_ON]->(:Field)
+(:ContractType)-[:GOVERNED_BY]->(:LegalArticle)
 ```
 
-Main server'daki ilgili sınıflar:
-- `GraphRagService.java` - WebClient ile bu sunucuyu çağırır
-- `AnalysisService.java` - NLP + GraphRAG orchestration
-- `ContractTypeMapping.java` - İngilizce enum ↔ Türkçe snake_case dönüşümü
+`gap_analysis` + `gemini` servisleri için ek beklenti:
 
-**Sözleşme Tipi Uyumu:**
+```
+(:Node {id, name, type, description, madde_no})
+— node tipleri: KAVRAM, ROL, YUKUMLULUK, HAK, SOZLESME_TIPI,
+                SURE, UCRET, BORC, SORUMLULUK, TAZMINAT, FORM
+```
 
-| Main Server (enum) | GraphRAG (snake_case) |
-|---------------------|----------------------|
-| SALES | satis_sozlesmesi |
-| RENTAL | kira_sozlesmesi |
-| SERVICE | hizmet_sozlesmesi |
-| EMPLOYMENT | is_sozlesmesi |
+---
 
-> **Not:** `is_sozlesmesi` (EMPLOYMENT) tipi henüz GraphRAG knowledge graph'ında tanımlı değil. İleride eklenmesi gerekiyor.
-
-## 📝 Lisans
-
-MIT License

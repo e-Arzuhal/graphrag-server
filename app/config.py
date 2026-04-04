@@ -2,8 +2,12 @@
 Application configuration module.
 Loads settings from environment variables using pydantic-settings.
 """
+from pathlib import Path
 from functools import lru_cache
 from pydantic_settings import BaseSettings
+
+# Resolve .env relative to this file's location (project root)
+_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
 
 class Settings(BaseSettings):
@@ -26,9 +30,10 @@ class Settings(BaseSettings):
     app_version: str = "1.0.0"
     debug: bool = False
     internal_api_key: str
+    gemini_api_key: str = ""
 
     class Config:
-        env_file = ".env"
+        env_file = str(_ENV_FILE)
         env_file_encoding = "utf-8"
         case_sensitive = False
 
