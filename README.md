@@ -322,6 +322,3 @@ Beklenen düğüm ve ilişkiler (`legal_analysis` servisi için):
 
 ---
 
-## Lisans
-
-MIT
