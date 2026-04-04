@@ -32,6 +32,7 @@ dependencies = [
     "neo4j>=5.15.0",
     "python-dotenv>=1.0.0",
     "spacy>=3.7.0",
+    "google-genai>=1.0.0",
 ]
 
 [project.optional-dependencies]
