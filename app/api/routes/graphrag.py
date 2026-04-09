@@ -15,7 +15,7 @@ from app.services.validation_service import run_validations
 from app.services.neo4j_service import get_legal_context_for_fields
 from app.services.gemini_service import analyze_with_gemini
 
-_api_key_header = APIKeyHeader(name="X-Internal-Key", auto_error=False)
+_api_key_header = APIKeyHeader(name="X-Internal-API-Key", auto_error=False)
 
 
 async def verify_internal_key(key: str = Security(_api_key_header)) -> None:
