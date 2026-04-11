@@ -2,8 +2,10 @@
 GraphRAG API routes module.
 Defines FastAPI endpoints for contract analysis and suggestion generation.
 """
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Security, status
+from fastapi.security import APIKeyHeader
 
+from app.config import get_settings
 from app.models.response.graphrag import AnalyzeInputRequest
 from app.data.contract_schemas import SUPPORTED_CONTRACT_TYPES
 from app.data.field_tbk_mapping import FIELD_TBK_MAPPING
@@ -12,6 +14,17 @@ from app.services.gap_analysis_service import run_gap_analysis, needs_llm_analys
 from app.services.validation_service import run_validations
 from app.services.neo4j_service import get_legal_context_for_fields
 from app.services.gemini_service import analyze_with_gemini
+
+_api_key_header = APIKeyHeader(name="X-Internal-API-Key", auto_error=False)
+
+
+async def verify_internal_key(key: str = Security(_api_key_header)) -> None:
+    settings = get_settings()
+    if not key or key != settings.internal_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing internal API key.",
+        )
 
 
 router = APIRouter(
@@ -59,7 +72,10 @@ def _validate_contract_type(contract_type: str) -> None:
     - `PERCENT`: Percentages
     """,
 )
-async def analyze_input(request: AnalyzeInputRequest):
+async def analyze_input(
+    request: AnalyzeInputRequest,
+    _: None = Depends(verify_internal_key),
+):
     _validate_contract_type(request.contract_type)
 
     contract_type      = request.contract_type
