@@ -15,8 +15,12 @@ from typing import Dict, List, Any, Optional, Set, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 import json
+
+from app.core.logger import get_logger
 from app.utils.db import neo4j_driver
 from app.services.legal_analysis_service import get_legal_analysis_service
+
+logger = get_logger(__name__)
 
 
 class ContractType(Enum):
@@ -295,72 +299,87 @@ class ContractGenerator:
             dependencies
         """
         
-        with neo4j_driver.get_session() as session:
-            result = session.run(query, contract_type=contract_type)
-            record = result.single()
-            
-            if record is None:
-                # If no graph data found, use static mapping
-                return self._get_static_requirements(contract_type)
-            
-            # Process and return the graph data
-            requires = [
-                ContractField(
-                    node_id=r["node_id"],
-                    name=r["name"] or self._get_field_name(contract_type, r["node_id"]),
-                    necessity=NecessityLevel.REQUIRES,
-                    description=r.get("description")
+        logger.debug("fetch_contract_requirements: %s", contract_type)
+        try:
+            with neo4j_driver.get_session() as session:
+                result = session.run(query, contract_type=contract_type)
+                record = result.single()
+
+                if record is None:
+                    logger.warning(
+                        "fetch_contract_requirements: no graph record for %s — using static fallback",
+                        contract_type,
+                    )
+                    return self._get_static_requirements(contract_type)
+
+                # Process and return the graph data
+                requires = [
+                    ContractField(
+                        node_id=r["node_id"],
+                        name=r["name"] or self._get_field_name(contract_type, r["node_id"]),
+                        necessity=NecessityLevel.REQUIRES,
+                        description=r.get("description")
+                    )
+                    for r in record["requires_nodes"] if r["node_id"] is not None
+                ]
+
+                recommended = [
+                    ContractField(
+                        node_id=r["node_id"],
+                        name=r["name"] or self._get_field_name(contract_type, r["node_id"]),
+                        necessity=NecessityLevel.RECOMMENDED,
+                        description=r.get("description")
+                    )
+                    for r in record["recommended_nodes"] if r["node_id"] is not None
+                ]
+
+                optional = [
+                    ContractField(
+                        node_id=r["node_id"],
+                        name=r["name"] or self._get_field_name(contract_type, r["node_id"]),
+                        necessity=NecessityLevel.OPTIONAL,
+                        description=r.get("description")
+                    )
+                    for r in record["optional_nodes"] if r["node_id"] is not None
+                ]
+
+                # Process dependencies
+                dependencies = [
+                    d for d in record["dependencies"]
+                    if d["from_id"] is not None and d["to_id"] is not None
+                ]
+
+                # Add dependencies to fields
+                dep_map = {}
+                for dep in dependencies:
+                    from_id = dep["from_id"]
+                    if from_id not in dep_map:
+                        dep_map[from_id] = []
+                    dep_map[from_id].append(dep["to_id"])
+
+                for field_list in [requires, recommended, optional]:
+                    for f in field_list:
+                        f.depends_on = dep_map.get(f.node_id, [])
+
+                logger.debug(
+                    "fetch_contract_requirements: %s -> requires=%d recommended=%d optional=%d",
+                    contract_type, len(requires), len(recommended), len(optional),
                 )
-                for r in record["requires_nodes"] if r["node_id"] is not None
-            ]
-            
-            recommended = [
-                ContractField(
-                    node_id=r["node_id"],
-                    name=r["name"] or self._get_field_name(contract_type, r["node_id"]),
-                    necessity=NecessityLevel.RECOMMENDED,
-                    description=r.get("description")
-                )
-                for r in record["recommended_nodes"] if r["node_id"] is not None
-            ]
-            
-            optional = [
-                ContractField(
-                    node_id=r["node_id"],
-                    name=r["name"] or self._get_field_name(contract_type, r["node_id"]),
-                    necessity=NecessityLevel.OPTIONAL,
-                    description=r.get("description")
-                )
-                for r in record["optional_nodes"] if r["node_id"] is not None
-            ]
-            
-            # Process dependencies
-            dependencies = [
-                d for d in record["dependencies"] 
-                if d["from_id"] is not None and d["to_id"] is not None
-            ]
-            
-            # Add dependencies to fields
-            dep_map = {}
-            for dep in dependencies:
-                from_id = dep["from_id"]
-                if from_id not in dep_map:
-                    dep_map[from_id] = []
-                dep_map[from_id].append(dep["to_id"])
-            
-            for field_list in [requires, recommended, optional]:
-                for f in field_list:
-                    f.depends_on = dep_map.get(f.node_id, [])
-            
-            return {
-                "contract_type": contract_type,
-                "display_name": record.get("display_name", ""),
-                "requires": [f.to_dict() for f in requires],
-                "recommended": [f.to_dict() for f in recommended],
-                "optional": [f.to_dict() for f in optional],
-                "dependencies": dependencies,
-                "field_mapping": self.CONTRACT_FIELD_MAPPING.get(contract_type, {})
-            }
+                return {
+                    "contract_type": contract_type,
+                    "display_name": record.get("display_name", ""),
+                    "requires": [f.to_dict() for f in requires],
+                    "recommended": [f.to_dict() for f in recommended],
+                    "optional": [f.to_dict() for f in optional],
+                    "dependencies": dependencies,
+                    "field_mapping": self.CONTRACT_FIELD_MAPPING.get(contract_type, {})
+                }
+        except Exception as e:
+            logger.error(
+                "fetch_contract_requirements: Neo4j query failed for %s: %s — using static fallback",
+                contract_type, e, exc_info=True,
+            )
+            return self._get_static_requirements(contract_type)
     
     def _get_static_requirements(self, contract_type: str) -> Dict[str, Any]:
         """
@@ -777,15 +796,17 @@ class ContractGenerator:
         Returns:
             Complete analysis result with suggestions and legal references
         """
+        logger.info("analyze_user_input: contract_type=%s", contract_type)
+
         # Step 1: Fetch requirements from graph
         graph_data = self.fetch_contract_requirements(contract_type)
-    
+
         # Step 2: Run reasoning engine
         analysis = self.agentic_reasoning_engine(extracted_entities, graph_data)
-    
+
         # Step 3: Generate suggestions
         suggestions = self.generate_proactive_suggestions(analysis)
-    
+
         # Step 4: Legal analysis — kanun maddeleri, compliance score, conflict detection
         # matched_fields listesinden alan adlarını çıkar
         analysis_dict = analysis.to_dict()
@@ -800,6 +821,10 @@ class ContractGenerator:
             )
         except Exception as e:
             # Legal analysis opsiyonel — hata olursa ana akışı kesmez
+            logger.error(
+                "analyze_user_input: legal_analysis step failed for %s: %s",
+                contract_type, e, exc_info=True,
+            )
             legal_analysis = {
                 "error": str(e),
                 "related_articles": [],

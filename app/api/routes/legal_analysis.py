@@ -19,11 +19,14 @@ from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Header, status
 from pydantic import BaseModel, Field
 
+from app.core.logger import get_logger
 from app.services.legal_analysis_service import (
     LegalAnalysisService,
     get_legal_analysis_service,
 )
 from app.services.contract_types import ContractType
+
+logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -38,6 +41,7 @@ def verify_internal_key(x_internal_api_key: Optional[str] = Header(default=None)
     """
     expected = os.getenv("INTERNAL_API_KEY")
     if expected and x_internal_api_key != expected:
+        logger.warning("Rejected request: invalid or missing X-Internal-API-Key header")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing X-Internal-API-Key header.",
@@ -148,6 +152,10 @@ async def contract_legal_analysis(
     request: ContractLegalAnalysisRequest,
     service: LegalAnalysisService = Depends(get_legal_analysis_service),
 ):
+    logger.info(
+        "POST /legal-analysis/contract-legal-analysis: contract_type=%s clauses=%d",
+        request.contract_type, len(request.clauses),
+    )
     try:
         result = service.analyze_contract(
             contract_type=request.contract_type,
@@ -156,8 +164,10 @@ async def contract_legal_analysis(
         )
         return result
     except ValueError as e:
+        logger.warning("contract_legal_analysis: bad request: %s", e)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
+        logger.error("contract_legal_analysis: unexpected failure: %s", e, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Analysis failed: {str(e)}",
@@ -182,12 +192,15 @@ async def get_contract_graph(
     contract_type: str,
     service: LegalAnalysisService = Depends(get_legal_analysis_service),
 ):
+    logger.info("GET /legal-analysis/contract-graph/%s", contract_type)
     try:
         result = service.get_contract_graph(contract_type)
         return result
     except ValueError as e:
+        logger.warning("get_contract_graph: bad request: %s", e)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
+        logger.error("get_contract_graph: unexpected failure: %s", e, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Graph retrieval failed: {str(e)}",

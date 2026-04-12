@@ -23,6 +23,8 @@ the service falls back to FALLBACK_LAW_ARTICLES from contract_types.py so the
 endpoint always returns a useful response.
 """
 from typing import Dict, List, Any, Optional
+
+from app.core.logger import get_logger
 from app.utils.db import neo4j_driver
 from app.services.contract_types import (
     ContractType,
@@ -32,6 +34,8 @@ from app.services.contract_types import (
     FALLBACK_LAW_ARTICLES,
     LegalArticle,
 )
+
+logger = get_logger(__name__)
 
 
 class LegalAnalysisService:
@@ -74,6 +78,10 @@ class LegalAnalysisService:
             }
         """
         self._validate_contract_type(contract_type)
+        logger.info(
+            "analyze_contract: contract_type=%s clauses=%d",
+            contract_type, len(clauses),
+        )
 
         # Fetch what the graph says this contract type requires
         required_fields = self._get_required_fields_from_graph(contract_type)
@@ -104,6 +112,11 @@ class LegalAnalysisService:
                 for f in missing_required[:3]  # top 3 only to avoid noise
             ]
 
+        logger.info(
+            "analyze_contract done: compliance=%.1f missing_required=%d conflicts=%d articles=%d",
+            compliance_score, len(missing_required), len(conflicts), len(articles),
+        )
+
         return {
             "contract_type":              contract_type,
             "display_name":               DISPLAY_NAMES.get(contract_type, contract_type),
@@ -133,6 +146,7 @@ class LegalAnalysisService:
             }
         """
         self._validate_contract_type(contract_type)
+        logger.info("get_contract_graph: contract_type=%s", contract_type)
 
         graph_data = self._fetch_full_graph(contract_type)
         articles   = self._get_law_articles(contract_type)
@@ -166,9 +180,20 @@ class LegalAnalysisService:
                 result = session.run(query, contract_type=contract_type)
                 names = [r["name"] for r in result if r["name"]]
                 if names:
+                    logger.debug(
+                        "_get_required_fields_from_graph: %d fields from Neo4j for %s",
+                        len(names), contract_type,
+                    )
                     return names
-        except Exception:
-            pass
+                logger.warning(
+                    "_get_required_fields_from_graph: Neo4j returned no fields for %s — using static fallback",
+                    contract_type,
+                )
+        except Exception as e:
+            logger.error(
+                "_get_required_fields_from_graph: Neo4j query failed for %s: %s — using static fallback",
+                contract_type, e, exc_info=True,
+            )
 
         # Fallback to static map
         field_keys = REQUIRED_FIELDS.get(contract_type, [])
@@ -198,6 +223,10 @@ class LegalAnalysisService:
                 result  = session.run(query, contract_type=contract_type)
                 records = list(result)
                 if records:
+                    logger.debug(
+                        "_get_law_articles: %d articles from Neo4j for %s",
+                        len(records), contract_type,
+                    )
                     return [
                         LegalArticle(
                             article_id    = r["article_id"]     or "",
@@ -211,8 +240,15 @@ class LegalAnalysisService:
                         )
                         for r in records
                     ]
-        except Exception:
-            pass
+                logger.warning(
+                    "_get_law_articles: no LegalArticle nodes for %s — using static fallback",
+                    contract_type,
+                )
+        except Exception as e:
+            logger.error(
+                "_get_law_articles: Neo4j query failed for %s: %s — using static fallback",
+                contract_type, e, exc_info=True,
+            )
 
         # Fallback — always return something useful
         fallback_data = FALLBACK_LAW_ARTICLES.get(contract_type, [])
@@ -263,13 +299,24 @@ class LegalAnalysisService:
                     optional  = [c for c in record["optional_clauses"] if c.get("name")]
                     cross_refs= [r for r in record["cross_refs"]       if r.get("from") and r.get("to")]
                     if mandatory or optional:
+                        logger.debug(
+                            "_fetch_full_graph: %s -> mandatory=%d optional=%d cross_refs=%d",
+                            contract_type, len(mandatory), len(optional), len(cross_refs),
+                        )
                         return {
                             "mandatory":        mandatory,
                             "optional":         optional,
                             "cross_references": cross_refs,
                         }
-        except Exception:
-            pass
+                logger.warning(
+                    "_fetch_full_graph: Neo4j returned no clauses for %s — using static fallback",
+                    contract_type,
+                )
+        except Exception as e:
+            logger.error(
+                "_fetch_full_graph: Neo4j query failed for %s: %s — using static fallback",
+                contract_type, e, exc_info=True,
+            )
 
         # Fallback: build from static maps
         field_keys  = REQUIRED_FIELDS.get(contract_type, [])

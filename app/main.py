@@ -9,22 +9,25 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import get_settings
+from app.core.logger import get_logger
 from app.utils.db import neo4j_driver
 from app.api.routes.graphrag import router as graphrag_router
 from app.api.routes.legal_analysis import router as legal_analysis_router
+
+logger = get_logger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
         neo4j_driver.connect()
-        print("✓ Neo4j connection established successfully")
+        logger.info("Neo4j connection established successfully")
     except Exception as e:
-        print(f"✗ Failed to connect to Neo4j: {e}")
+        logger.critical("Failed to connect to Neo4j: %s", e, exc_info=True)
         raise
     yield
     neo4j_driver.close()
-    print("✓ Neo4j connection closed")
+    logger.info("Neo4j connection closed")
 
 
 settings = get_settings()
@@ -82,6 +85,7 @@ async def health_check():
             session.run("RETURN 1")
         db_status = "connected"
     except Exception as e:
+        logger.warning("Health check: Neo4j unreachable: %s", e)
         db_status = f"error: {str(e)}"
 
     return {
