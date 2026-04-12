@@ -1,6 +1,10 @@
 import asyncio
 from typing import Dict, List
+
+from app.core.logger import get_logger
 from app.utils.db import neo4j_driver
+
+logger = get_logger(__name__)
 
 
 def _query_field(field: str, keywords: List[str], limit: int) -> List[Dict]:
@@ -23,9 +27,14 @@ def _query_field(field: str, keywords: List[str], limit: int) -> List[Dict]:
     try:
         with neo4j_driver.get_session() as session:
             result = session.run(query, keywords=keywords, limit=limit)
-            return [dict(record) for record in result]
+            records = [dict(record) for record in result]
+            logger.debug(
+                "Neo4j query for field '%s' returned %d records (keywords=%s)",
+                field, len(records), keywords,
+            )
+            return records
     except Exception as e:
-        print(f"Neo4j error for field '{field}': {e}")
+        logger.error("Neo4j query failed for field '%s': %s", field, e, exc_info=True)
         return []
 
 
@@ -38,6 +47,7 @@ async def get_legal_context_for_fields(
     Fetches relevant Neo4j graph data for each problematic field.
     Runs sync driver queries in a thread pool to avoid blocking the event loop.
     """
+    logger.info("Fetching Neo4j context for %d fields: %s", len(fields), fields)
     loop = asyncio.get_event_loop()
     results = {}
 
@@ -50,4 +60,6 @@ async def get_legal_context_for_fields(
         )
         results[field] = records
 
+    total_records = sum(len(r) for r in results.values())
+    logger.info("Neo4j context fetch complete: %d total records across %d fields", total_records, len(fields))
     return results

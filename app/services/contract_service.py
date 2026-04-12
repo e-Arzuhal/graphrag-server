@@ -3,9 +3,13 @@ Contract service module.
 Contains business logic for contract template operations.
 """
 from typing import List, Dict, Any
+
+from app.core.logger import get_logger
 from app.db.repositories.contract_repository import ContractRepository, get_contract_repository
 from app.models.response.contract import ClauseDTO, ContractTemplateResponse
 from app.services.exceptions import ContractNotFoundError
+
+logger = get_logger(__name__)
 
 
 class ContractService:
@@ -61,10 +65,12 @@ class ContractService:
             5
         """
         # Query the repository for contract data
+        logger.info("get_contract_template: %s", contract_type_name)
         data = self.repository.get_contract_template(contract_type_name)
-        
+
         # Handle case where contract type doesn't exist
         if data is None:
+            logger.warning("Contract template not found: %s", contract_type_name)
             raise ContractNotFoundError(contract_type_name)
         
         # Transform raw clause data into ClauseDTO models

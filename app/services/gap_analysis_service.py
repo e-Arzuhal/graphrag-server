@@ -1,5 +1,9 @@
 from typing import Dict, List, Any
+
+from app.core.logger import get_logger
 from app.data.contract_schemas import CONTRACT_SCHEMAS
+
+logger = get_logger(__name__)
 
 
 def _detect_present_fields(
@@ -92,6 +96,11 @@ def run_gap_analysis(
         completeness_score = 1.0
     else:
         completeness_score = round(len([f for f in required if f in present]) / len(required), 2)
+
+    logger.info(
+        "gap_analysis: contract_type=%s present=%d missing_required=%d missing_optional=%d completeness=%.2f",
+        contract_type, len(present), len(missing_required), len(missing_optional), completeness_score,
+    )
 
     return {
         "present":            present,

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Security, status
 from fastapi.security import APIKeyHeader
 
 from app.config import get_settings
+from app.core.logger import get_logger
 from app.models.response.graphrag import AnalyzeInputRequest
 from app.data.contract_schemas import SUPPORTED_CONTRACT_TYPES
 from app.data.field_tbk_mapping import FIELD_TBK_MAPPING
@@ -15,12 +16,15 @@ from app.services.validation_service import run_validations
 from app.services.neo4j_service import get_legal_context_for_fields
 from app.services.gemini_service import analyze_with_gemini
 
+logger = get_logger(__name__)
+
 _api_key_header = APIKeyHeader(name="X-Internal-API-Key", auto_error=False)
 
 
 async def verify_internal_key(key: str = Security(_api_key_header)) -> None:
     settings = get_settings()
     if not key or key != settings.internal_api_key:
+        logger.warning("Rejected request: invalid or missing X-Internal-API-Key header")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing internal API key.",
@@ -39,6 +43,7 @@ router = APIRouter(
 
 def _validate_contract_type(contract_type: str) -> None:
     if contract_type not in SUPPORTED_CONTRACT_TYPES:
+        logger.warning("Rejected unsupported contract type: %s", contract_type)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
@@ -81,6 +86,11 @@ async def analyze_input(
     contract_type      = request.contract_type
     extracted_entities = request.extracted_entities
 
+    logger.info(
+        "POST /analyze/input: contract_type=%s entity_types=%s",
+        contract_type, list(extracted_entities.keys()),
+    )
+
     # 1. Gap Analysis
     gap = run_gap_analysis(contract_type, extracted_entities)
 
@@ -91,6 +101,7 @@ async def analyze_input(
     use_llm          = needs_llm_analysis(gap["missing_required"], validation_errors)
     legal_analysis   = None
     compliance_score = gap["completeness_score"]
+    logger.debug("Decision gate: use_llm=%s", use_llm)
 
     if use_llm:
         # 4. Neo4j — fetch graph context for missing/invalid fields

@@ -4,7 +4,10 @@ Contains Neo4j Cypher queries and database interactions for contract data.
 """
 from typing import Any, Dict, List, Optional
 
+from app.core.logger import get_logger
 from app.utils.db import Neo4jDriver
+
+logger = get_logger(__name__)
 
 
 class ContractRepository:
@@ -38,17 +41,22 @@ class ContractRepository:
         RETURN c.name as name, c.display_name as display_name
         ORDER BY c.name
         """
-        with self.driver.get_session() as session:
-            result = session.run(query)
-            contracts = []
-            for record in result:
-                name = record["name"]
-                display_name = self._get_display_name(name, record.get("display_name"))
-                contracts.append({
-                    "name": name,
-                    "display_name": display_name
-                })
-            return contracts
+        try:
+            with self.driver.get_session() as session:
+                result = session.run(query)
+                contracts = []
+                for record in result:
+                    name = record["name"]
+                    display_name = self._get_display_name(name, record.get("display_name"))
+                    contracts.append({
+                        "name": name,
+                        "display_name": display_name
+                    })
+                logger.debug("get_all_contract_types: %d contract types", len(contracts))
+                return contracts
+        except Exception as e:
+            logger.error("get_all_contract_types: Neo4j query failed: %s", e, exc_info=True)
+            raise
     
     def get_contract_template(self, contract_type: str) -> Optional[Dict[str, Any]]:
         """Fetch a specific contract template with its clauses."""
@@ -57,7 +65,7 @@ class ContractRepository:
         OPTIONAL MATCH (c)-[r:REQUIRES|INCLUDES]->(clause:Clause)
         WITH c, clause, type(r) as rel_type
         ORDER BY clause.order
-        RETURN c.name as name, 
+        RETURN c.name as name,
                c.display_name as display_name,
                collect({
                    id: clause.id,
@@ -65,24 +73,32 @@ class ContractRepository:
                    type: rel_type
                }) as clauses
         """
-        with self.driver.get_session() as session:
-            result = session.run(query, contract_type=contract_type)
-            record = result.single()
-            
-            if record is None:
-                return None
-            
-            name = record["name"]
-            display_name = self._get_display_name(name, record.get("display_name"))
-            
-            return {
-                "name": name,
-                "display_name": display_name,
-                "clauses": [
-                    clause for clause in record["clauses"] 
-                    if clause.get("id") is not None
-                ]
-            }
+        try:
+            with self.driver.get_session() as session:
+                result = session.run(query, contract_type=contract_type)
+                record = result.single()
+
+                if record is None:
+                    logger.debug("get_contract_template: no record for %s", contract_type)
+                    return None
+
+                name = record["name"]
+                display_name = self._get_display_name(name, record.get("display_name"))
+
+                return {
+                    "name": name,
+                    "display_name": display_name,
+                    "clauses": [
+                        clause for clause in record["clauses"]
+                        if clause.get("id") is not None
+                    ]
+                }
+        except Exception as e:
+            logger.error(
+                "get_contract_template: Neo4j query failed for %s: %s",
+                contract_type, e, exc_info=True,
+            )
+            raise
     
     def get_contract_requirements(self, contract_type: str) -> Optional[Dict[str, Any]]:
         """
@@ -111,30 +127,38 @@ class ContractRepository:
                optional,
                dependencies
         """
-        with self.driver.get_session() as session:
-            result = session.run(query, contract_type=contract_type)
-            record = result.single()
-            
-            if record is None:
-                return None
-            
-            name = record["name"]
-            display_name = self._get_display_name(name, record.get("display_name"))
-            
-            # Filter out null entries
-            requires = [r for r in record["requires"] if r.get("id") is not None]
-            recommended = [r for r in record["recommended"] if r.get("id") is not None]
-            optional = [r for r in record["optional"] if r.get("id") is not None]
-            dependencies = [d for d in record["dependencies"] if d.get("from_id") is not None]
-            
-            return {
-                "name": name,
-                "display_name": display_name,
-                "requires": requires,
-                "recommended": recommended,
-                "optional": optional,
-                "dependencies": dependencies
-            }
+        try:
+            with self.driver.get_session() as session:
+                result = session.run(query, contract_type=contract_type)
+                record = result.single()
+
+                if record is None:
+                    logger.debug("get_contract_requirements: no record for %s", contract_type)
+                    return None
+
+                name = record["name"]
+                display_name = self._get_display_name(name, record.get("display_name"))
+
+                # Filter out null entries
+                requires = [r for r in record["requires"] if r.get("id") is not None]
+                recommended = [r for r in record["recommended"] if r.get("id") is not None]
+                optional = [r for r in record["optional"] if r.get("id") is not None]
+                dependencies = [d for d in record["dependencies"] if d.get("from_id") is not None]
+
+                return {
+                    "name": name,
+                    "display_name": display_name,
+                    "requires": requires,
+                    "recommended": recommended,
+                    "optional": optional,
+                    "dependencies": dependencies
+                }
+        except Exception as e:
+            logger.error(
+                "get_contract_requirements: Neo4j query failed for %s: %s",
+                contract_type, e, exc_info=True,
+            )
+            raise
 
 
 # Singleton instance for dependency injection

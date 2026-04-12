@@ -1,5 +1,9 @@
 from typing import List, Dict
 
+from app.core.logger import get_logger
+
+logger = get_logger(__name__)
+
 
 def run_validations(
     contract_type: str,
@@ -7,6 +11,9 @@ def run_validations(
 ) -> List[Dict]:
     errors    = []
     cardinals = extracted_entities.get("CARDINAL", [])
+    logger.debug(
+        "run_validations: contract_type=%s cardinals=%s", contract_type, cardinals,
+    )
 
     if contract_type == "is_sozlesmesi":
 
@@ -21,7 +28,7 @@ def run_validations(
                             "tbk_limit": "TBK m.393 — max 2 ay"
                         })
                 except ValueError:
-                    pass
+                    logger.debug("Could not parse CARDINAL '%s' as number (ay check)", c)
 
             if "hafta" in c:
                 try:
@@ -33,6 +40,11 @@ def run_validations(
                             "tbk_limit": "TBK m.432 — min 2 hafta"
                         })
                 except ValueError:
-                    pass
+                    logger.debug("Could not parse CARDINAL '%s' as number (hafta check)", c)
 
+    if errors:
+        logger.info(
+            "run_validations: %d TBK rule violation(s) for %s",
+            len(errors), contract_type,
+        )
     return errors

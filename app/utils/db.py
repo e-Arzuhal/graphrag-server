@@ -4,7 +4,11 @@ Provides a singleton pattern for managing Neo4j driver connections.
 """
 from typing import Optional
 from neo4j import GraphDatabase, Driver
+
 from app.config import get_settings
+from app.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class Neo4jDriver:
@@ -57,12 +61,14 @@ class Neo4jDriver:
         """
         if self._driver is None:
             settings = get_settings()
+            logger.info("Connecting to Neo4j at %s as %s", settings.neo4j_uri, settings.neo4j_user)
             self._driver = GraphDatabase.driver(
                 settings.neo4j_uri,
                 auth=(settings.neo4j_user, settings.neo4j_password)
             )
             # Verify connectivity
             self._driver.verify_connectivity()
+            logger.info("Neo4j driver verified")
 
     def close(self) -> None:
         """
@@ -70,6 +76,7 @@ class Neo4jDriver:
         Should be called during application shutdown.
         """
         if self._driver is not None:
+            logger.debug("Closing Neo4j driver")
             self._driver.close()
             self._driver = None
 

@@ -4,7 +4,10 @@ from typing import List, Dict
 from google import genai
 
 from app.config import get_settings
+from app.core.logger import get_logger
 from app.services.pii_filter import sanitize_validation_errors
+
+logger = get_logger(__name__)
 
 _client: genai.Client | None = None
 
@@ -127,6 +130,13 @@ async def analyze_with_gemini(
         contract_type, present_fields, missing_required,
         missing_optional, safe_validation_errors, neo4j_context,
     )
+
+    logger.info(
+        "Gemini request | contract_type=%s | present=%d | missing_required=%d | missing_optional=%d | validation_errors=%d",
+        contract_type, len(present_fields), len(missing_required), len(missing_optional), len(safe_validation_errors),
+    )
+    logger.debug("Gemini prompt length: %d chars", len(prompt))
+
     try:
         response = _get_client().models.generate_content(
             model="gemini-2.5-flash",
@@ -134,13 +144,24 @@ async def analyze_with_gemini(
         )
         raw = response.text.strip()
         if raw.startswith("```"):
+            logger.warning("Gemini returned markdown-fenced JSON — stripping fences")
             raw = raw.split("```")[1]
             if raw.startswith("json"):
                 raw = raw[4:]
-        return json.loads(raw.strip())
+
+        result = json.loads(raw.strip())
+        logger.info(
+            "Gemini response OK | risks=%d | compliance_penalty=%.2f",
+            len(result.get("risks", [])), result.get("compliance_penalty", 0.0),
+        )
+        return result
 
     except Exception as e:
-        print(f"Gemini error: {e}")
+        logger.error("Gemini request failed: %s", e, exc_info=True)
+        logger.warning(
+            "Returning fallback HIGH-risk response for %d missing required fields",
+            len(missing_required),
+        )
         return {
             "tbk_articles": [],
             "risks": [
