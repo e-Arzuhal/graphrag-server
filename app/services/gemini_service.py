@@ -4,6 +4,7 @@ from typing import List, Dict
 from google import genai
 
 from app.config import get_settings
+from app.services.pii_filter import sanitize_validation_errors
 
 _client: genai.Client | None = None
 
@@ -121,9 +122,10 @@ async def analyze_with_gemini(
     validation_errors: List[Dict],
     neo4j_context: Dict[str, List[Dict]],
 ) -> Dict:
+    safe_validation_errors = sanitize_validation_errors(validation_errors)
     prompt = _build_prompt(
         contract_type, present_fields, missing_required,
-        missing_optional, validation_errors, neo4j_context,
+        missing_optional, safe_validation_errors, neo4j_context,
     )
     try:
         response = _get_client().models.generate_content(
