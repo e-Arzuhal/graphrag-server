@@ -1,21 +1,17 @@
 """
-e-Arzuhal GraphRAG Server — main.py (updated)
-
-Changes from original:
-  1. Added legal_analysis_router for the two new endpoints
-  2. CORS: allow_origins now reads from ALLOWED_ORIGINS env var (AGENTS.md fix)
-  3. Docs disabled in production (SECURITY_AUDIT.md fix)
+e-Arzuhal GraphRAG Server — main.py
 """
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.utils.db import neo4j_driver
 from app.api.routes.graphrag import router as graphrag_router
-from app.api.routes.legal_analysis import router as legal_analysis_router   # NEW
+from app.api.routes.legal_analysis import router as legal_analysis_router
 
 
 @asynccontextmanager
@@ -33,8 +29,8 @@ async def lifespan(app: FastAPI):
 
 settings = get_settings()
 
-# Disable Swagger in production (SECURITY_AUDIT.md)
 _debug = os.getenv("DEBUG", "true").lower() == "true"
+_internal_api_key = os.getenv("INTERNAL_API_KEY", "")
 
 app = FastAPI(
     title=settings.app_name,
@@ -45,23 +41,33 @@ app = FastAPI(
     openapi_url="/openapi.json" if _debug else None,
 )
 
-# CORS — never use wildcard with credentials (AGENTS.md + SECURITY_AUDIT.md)
+# CORS — yalnızca main-server erişmeli
 _allowed_origins = os.getenv(
     "ALLOWED_ORIGINS",
-    "http://localhost:3000,http://localhost:19006"
+    "http://localhost:8080"
 ).split(",")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def api_key_middleware(request: Request, call_next):
+    """Internal API key kontrolü. INTERNAL_API_KEY set edilmemişse (dev) pas geçer."""
+    if request.url.path in ("/health", "/"):
+        return await call_next(request)
+    if _internal_api_key and request.headers.get("X-Internal-API-Key") != _internal_api_key:
+        return JSONResponse(status_code=401, content={"detail": "Geçersiz veya eksik API anahtarı"})
+    return await call_next(request)
+
 # Routers
 app.include_router(graphrag_router,       prefix="/api/v1")
-app.include_router(legal_analysis_router, prefix="/api/v1")   # NEW
+app.include_router(legal_analysis_router, prefix="/api/v1")
 
 
 @app.get("/", tags=["Health"])
