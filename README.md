@@ -278,6 +278,14 @@ uvicorn app.main:app --reload --port 8000
 
 ---
 
+## Observability
+
+Her istek `X-Request-ID` ile loglanır. main-server'dan gelen header korunur; olmayan isteklerde UUID üretilir. Response'a da eklenir.
+
+```
+INFO  http_request service=graphrag method=POST path=/api/v1/analyze/input status=200 ms=340 request_id=3fa2c1d8
+```
+
 ## Test
 
 ```bash

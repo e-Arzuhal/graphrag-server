@@ -2,6 +2,8 @@
 e-Arzuhal GraphRAG Server — main.py
 """
 import os
+import time
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -67,6 +69,24 @@ async def api_key_middleware(request: Request, call_next):
     if _internal_api_key and request.headers.get("X-Internal-API-Key") != _internal_api_key:
         return JSONResponse(status_code=401, content={"detail": "Geçersiz veya eksik API anahtarı"})
     return await call_next(request)
+
+
+@app.middleware("http")
+async def observability_middleware(request: Request, call_next):
+    """Her isteği X-Request-ID ve süre ile loglar; response'a request-id ekler."""
+    if request.url.path in ("/health", "/"):
+        return await call_next(request)
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    start = time.time()
+    response = await call_next(request)
+    elapsed_ms = int((time.time() - start) * 1000)
+    logger.info(
+        "http_request service=graphrag method=%s path=%s status=%d ms=%d request_id=%s",
+        request.method, request.url.path, response.status_code, elapsed_ms, request_id,
+    )
+    response.headers["X-Request-ID"] = request_id
+    return response
+
 
 # Routers
 app.include_router(graphrag_router,       prefix="/api/v1")
