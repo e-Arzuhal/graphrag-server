@@ -258,12 +258,12 @@ NEO4J_PASSWORD=your_password
 
 APP_NAME=e-Arzuhal GraphRAG API
 APP_VERSION=1.0.0
-DEBUG=true
+DEBUG=false                          # true → /docs ve /redoc açılır (yalnızca geliştirme)
 
-INTERNAL_API_KEY=your_internal_key
+INTERNAL_API_KEY=your_internal_key   # openssl rand -hex 32
 GEMINI_API_KEY=your_gemini_api_key
 
-ALLOWED_ORIGINS=http://localhost:3000,http://localhost:19006
+ALLOWED_ORIGINS=http://localhost:8080
 ```
 
 ### Çalıştırma
@@ -275,6 +275,16 @@ uvicorn app.main:app --reload --port 8000
 `DEBUG=true` iken dokümantasyon açılır:
 - `http://localhost:8000/docs`
 - `http://localhost:8000/redoc`
+
+### Güvenlik
+
+**Auth davranışı:**
+- `INTERNAL_API_KEY` set + doğru header → izin verilir
+- `INTERNAL_API_KEY` set + yanlış/eksik header → **401**
+- `INTERNAL_API_KEY` boş + `DEBUG=true` → izin verilir (dev modu)
+- `INTERNAL_API_KEY` boş + `DEBUG=false` → **503** (yanlış yapılandırma)
+
+> Production'da `DEBUG=false` ve `INTERNAL_API_KEY` set edilmesi zorunludur.
 
 ---
 
