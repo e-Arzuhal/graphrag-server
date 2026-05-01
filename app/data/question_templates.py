@@ -35,7 +35,17 @@ QUESTION_TEMPLATES = {
     "depozito":             "Depozito alınacak mı? Ne kadar?",
     "artis_orani":          "Yıllık kira artış oranı nasıl belirlenecek?",
     "odeme_plani":          "Ödeme planı nasıl olacak?",
-    "odeme_yontemi":        "Ödeme yöntemi nedir?",
+    "odeme_yontemi":        "Ödeme yöntemi nedir? (Nakit, EFT/Havale, IBAN vs.)",
+
+    # Borç sözleşmesi alanları
+    "taraf_borclu":         "Borçlunun adı soyadı veya ticaret unvanı nedir?",
+    "borc_tutari":          "Borç tutarı nedir? (Para birimini de belirtin)",
+    "faiz_orani":           "Faiz oranı uygulanacak mı? Aylık/yıllık yüzde kaç?",
+    "vade":                 "Borcun vadesi nedir? Ne zamana kadar geri ödenecek?",
+    "temerrut_faizi":       "Vadesinde ödenmediğinde uygulanacak temerrüt faizi oranı nedir?",
+    "kefalet":              "Borç için kefil var mı? Kefilin bilgilerini belirtin.",
+    "ceza_kosulu":          "Sözleşmeye aykırılık halinde ceza koşulu uygulanacak mı?",
+    "yetkili_mahkeme":      "Uyuşmazlık halinde yetkili mahkeme hangisi olacak?",
 }
 
 

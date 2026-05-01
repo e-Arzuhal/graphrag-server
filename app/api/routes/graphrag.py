@@ -16,6 +16,30 @@ from app.services.validation_service import run_validations
 from app.services.neo4j_service import get_legal_context_for_fields
 from app.services.gemini_service import analyze_with_gemini
 
+
+# Statistics-server'dan beslenen kullanım yüzdeleri ileride buraya bağlanacak;
+# şimdilik sabit varsayılan değerler kullanıyoruz. None dönüyorsa frontend kendi
+# fallback'ine düşer.
+_DEFAULT_USAGE_PERCENT = {
+    "faiz_orani":     85,
+    "vade":           92,
+    "odeme_yontemi":  78,
+    "odeme_plani":    65,
+    "temerrut_faizi": 45,
+    "kefalet":        30,
+    "ceza_kosulu":    25,
+    "yetkili_mahkeme":40,
+    "depozito":       80,
+    "artis_orani":    72,
+    "deneme_suresi":  55,
+    "ihbar_suresi":   60,
+    "sure":           70,
+    "bitis_tarihi":   58,
+    "teslim_yeri":    50,
+    "yetki_kapsami":  68,
+    "taraf_2":        20,
+}
+
 logger = get_logger(__name__)
 
 _api_key_header = APIKeyHeader(name="X-Internal-API-Key", auto_error=False)
@@ -126,22 +150,37 @@ async def analyze_input(
         )
 
     # 6. Chatbot questions — required first, then optional
-    questions = []
-    priority  = 1
+    questions    = []
+    suggestions  = []
+    priority     = 1
     for field in gap["missing_required"]:
+        q_text = get_question(field)
         questions.append({
             "priority": priority,
             "field":    field,
-            "question": get_question(field),
+            "question": q_text,
             "required": True,
+        })
+        suggestions.append({
+            "field_name":    field,
+            "message":       q_text,
+            "necessity":     "required",
+            "usage_percent": _DEFAULT_USAGE_PERCENT.get(field),
         })
         priority += 1
     for field in gap["missing_optional"]:
+        q_text = get_question(field)
         questions.append({
             "priority": priority,
             "field":    field,
-            "question": get_question(field),
+            "question": q_text,
             "required": False,
+        })
+        suggestions.append({
+            "field_name":    field,
+            "message":       q_text,
+            "necessity":     "recommended",
+            "usage_percent": _DEFAULT_USAGE_PERCENT.get(field),
         })
         priority += 1
 
@@ -160,6 +199,9 @@ async def analyze_input(
             "status":            "complete" if not gap["missing_required"] else "incomplete",
             "next_action":       questions[0]["question"] if questions else None,
             "chatbot_questions": questions,
+            # Frontend (`realResult.graphrag_result?.suggestions?.suggestions`) bu listeyi okur.
+            # `chatbot_questions` geriye uyumluluk için korundu.
+            "suggestions":       suggestions,
         },
         "legal_analysis": legal_analysis,
         "graph_data":     {},

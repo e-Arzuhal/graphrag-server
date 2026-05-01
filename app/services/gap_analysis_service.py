@@ -25,7 +25,15 @@ def _detect_present_fields(
 
     all_parties = persons + orgs
 
-    if contract_type == "is_sozlesmesi":
+    if contract_type == "borc_sozlesmesi":
+        if len(all_parties) >= 1: present.append("taraf_alacakli")
+        if len(all_parties) >= 2: present.append("taraf_borclu")
+        if money:                  present.append("borc_tutari")
+        if dates:                  present.append("baslangic_tarihi")
+        if percents:               present.append("faiz_orani")
+        if cardinals:              present.append("vade")
+
+    elif contract_type == "is_sozlesmesi":
         if len(all_parties) >= 1: present.append("taraf_isci")
         if len(all_parties) >= 2: present.append("taraf_isveren")
         if money:                  present.append("ucret")
