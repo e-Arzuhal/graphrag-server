@@ -149,7 +149,7 @@ compliance_penalty: HIGH×0.15 + MEDIUM×0.07 + LOW×0.03
 ZORUNLU FORMAT KURALLARI:
 - SADECE JSON döndür; ek metin, başlık, markdown çiti (```), yorum yazma.
 - Tüm anahtarlar ve string değerler ÇİFT TIRNAK ile sarılmalı.
-- Trailing virgül koyma (örn. {"a":1,} hatalı).
+- Trailing virgül koyma (örn. {{"a":1,}} hatalı).
 - tbk_articles sadece sayı listesi olmalı; null veya string ekleme.
 """
 
