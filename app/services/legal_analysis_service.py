@@ -271,7 +271,7 @@ class LegalAnalysisService:
         }) AS mandatory
 
         // Optional + recommended clauses
-        OPTIONAL MATCH (c)-[:RECOMMENDED|OPTIONAL]->(opt)
+        OPTIONAL MATCH (c)-[:RECOMMENDED|`OPTIONAL`]->(opt)
         WITH c, mandatory, collect(DISTINCT {
             name: opt.name,
             description: coalesce(opt.description, ''),
@@ -279,7 +279,7 @@ class LegalAnalysisService:
         }) AS optional_clauses
 
         // Cross-references between clauses
-        OPTIONAL MATCH (c)-[:REQUIRES|RECOMMENDED|OPTIONAL]->(f1)
+        OPTIONAL MATCH (c)-[:REQUIRES|RECOMMENDED|`OPTIONAL`]->(f1)
         OPTIONAL MATCH (f1)-[rel:DEPENDS_ON]->(f2)
         WITH mandatory, optional_clauses,
              collect(DISTINCT {

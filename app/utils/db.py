@@ -10,6 +10,13 @@ from app.core.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Yüklü graf bazı sözleşme tipleri için :ContractType / :LegalArticle node'larına
+# sahip değil; bu durumda sürücü "UnknownLabelWarning" üretip log'u kirletiyor.
+# Statik fallback zaten devreye girdiği için bu uyarılara ihtiyacımız yok —
+# yalnızca UNRECOGNIZED kategorisini sustur, gerçek hata/perf uyarıları akmaya
+# devam etsin.
+_DISABLED_NOTIFICATION_CATEGORIES = ["UNRECOGNIZED"]
+
 
 class Neo4jDriver:
     """
@@ -62,10 +69,26 @@ class Neo4jDriver:
         if self._driver is None:
             settings = get_settings()
             logger.info("Connecting to Neo4j at %s as %s", settings.neo4j_uri, settings.neo4j_user)
-            self._driver = GraphDatabase.driver(
-                settings.neo4j_uri,
-                auth=(settings.neo4j_user, settings.neo4j_password)
-            )
+
+            # neo4j-python sürücüsünün bazı versiyonlarında
+            # `notifications_disabled_categories` kabul edilir, eskilerinde
+            # değil — TypeError verirse parametresiz tekrar kuruyoruz.
+            try:
+                self._driver = GraphDatabase.driver(
+                    settings.neo4j_uri,
+                    auth=(settings.neo4j_user, settings.neo4j_password),
+                    notifications_disabled_categories=_DISABLED_NOTIFICATION_CATEGORIES,
+                )
+            except TypeError:
+                logger.debug(
+                    "Neo4j driver does not support notifications_disabled_categories; "
+                    "using default config"
+                )
+                self._driver = GraphDatabase.driver(
+                    settings.neo4j_uri,
+                    auth=(settings.neo4j_user, settings.neo4j_password),
+                )
+
             # Verify connectivity
             self._driver.verify_connectivity()
             logger.info("Neo4j driver verified")

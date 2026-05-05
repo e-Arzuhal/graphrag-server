@@ -1,4 +1,23 @@
 CONTRACT_SCHEMAS = {
+    "borc_sozlesmesi": {
+        "required_spacy_labels": ["PERSON", "MONEY", "DATE"],
+        "required_fields": [
+            "taraf_alacakli",
+            "taraf_borclu",
+            "borc_tutari",
+            "baslangic_tarihi",
+        ],
+        "optional_fields": [
+            "faiz_orani",
+            "vade",
+            "odeme_yontemi",
+            "odeme_plani",
+            "temerrut_faizi",
+            "kefalet",
+            "ceza_kosulu",
+            "yetkili_mahkeme",
+        ]
+    },
     "is_sozlesmesi": {
         "required_spacy_labels": ["PERSON", "ORG", "MONEY", "DATE"],
         "required_fields": [

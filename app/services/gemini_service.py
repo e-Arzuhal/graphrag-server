@@ -1,4 +1,5 @@
 import json
+import re
 from typing import List, Dict
 
 from google import genai
@@ -8,6 +9,38 @@ from app.core.logger import get_logger
 from app.services.pii_filter import sanitize_validation_errors
 
 logger = get_logger(__name__)
+
+
+def _loose_json_parse(raw: str) -> Dict:
+    """
+    Gemini bazen markdown çitleri, sondaki virgüller, tek tırnak veya açıklama
+    metni döndürür. Bu yardımcı önce katı parse'ı dener, başarısız olursa
+    yaygın LLM çıktı hatalarını temizleyip yeniden dener.
+    """
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text[3:]
+        if text.lstrip().lower().startswith("json"):
+            text = text.lstrip()[4:]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # En dıştaki obje içeriğini regex ile çek — açıklama metnini at
+    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    candidate = match.group(0) if match else text
+
+    # Trailing virgülleri temizle: { "a": 1, } veya [ 1, 2, ]
+    cleaned = re.sub(r",(\s*[}\]])", r"\1", candidate)
+    # Tırnaksız anahtar adlarını yakala: { foo: 1 } → { "foo": 1 }
+    cleaned = re.sub(r'([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:', r'\1"\2":', cleaned)
+    # Tek tırnaklı stringleri çift tırnağa çevir (sadece basit durumlar)
+    cleaned = re.sub(r"(?<![A-Za-z0-9_])'([^'\n]*?)'(?![A-Za-z0-9_])", r'"\1"', cleaned)
+    return json.loads(cleaned)
 
 _client: genai.Client | None = None
 
@@ -113,7 +146,11 @@ Eksik Opsiyonel: {', '.join(missing_optional) or 'Yok'}
 
 compliance_penalty: HIGH×0.15 + MEDIUM×0.07 + LOW×0.03
 
-SADECE JSON döndür. Markdown veya açıklama ekleme.
+ZORUNLU FORMAT KURALLARI:
+- SADECE JSON döndür; ek metin, başlık, markdown çiti (```), yorum yazma.
+- Tüm anahtarlar ve string değerler ÇİFT TIRNAK ile sarılmalı.
+- Trailing virgül koyma (örn. {{"a":1,}} hatalı).
+- tbk_articles sadece sayı listesi olmalı; null veya string ekleme.
 """
 
 
@@ -138,18 +175,25 @@ async def analyze_with_gemini(
     logger.debug("Gemini prompt length: %d chars", len(prompt))
 
     try:
+        from google.genai import types as genai_types
         response = _get_client().models.generate_content(
             model="gemini-2.5-flash",
             contents=prompt,
+            config=genai_types.GenerateContentConfig(
+                # Gemini'yi katı JSON'a kilitle — markdown çiti ve serbest metni engeller
+                response_mime_type="application/json",
+                temperature=0.2,
+            ),
         )
         raw = response.text.strip()
-        if raw.startswith("```"):
-            logger.warning("Gemini returned markdown-fenced JSON — stripping fences")
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-
-        result = json.loads(raw.strip())
+        try:
+            result = _loose_json_parse(raw)
+        except json.JSONDecodeError as parse_err:
+            logger.warning(
+                "Gemini JSON parse failed (%s) — first 240 chars: %r",
+                parse_err, raw[:240],
+            )
+            raise
         logger.info(
             "Gemini response OK | risks=%d | compliance_penalty=%.2f",
             len(result.get("risks", [])), result.get("compliance_penalty", 0.0),
