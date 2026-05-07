@@ -193,12 +193,38 @@ async def get_contract_graph(
     service: LegalAnalysisService = Depends(get_legal_analysis_service),
 ):
     logger.info("GET /legal-analysis/contract-graph/%s", contract_type)
+    # "diger" / "other" / "genel_sozlesme" gibi tipte sözleşmeler graf'ta yok;
+    # 400 yerine boş ama yapısı geçerli bir 200 dön — main-server tarafı
+    # `available=false` durumunda zaten UI'a "şu an erişilemiyor" mesajı
+    # gösteriyor, ekstra hata günlüğü gereksiz.
+    GENERIC_ALIASES = {"diger", "other", "genel_sozlesme", "general", ""}
+    if (contract_type or "").strip().lower() in GENERIC_ALIASES:
+        return {
+            "contract_type": contract_type,
+            "display_name": "Genel Sözleşme",
+            "mandatory_clauses": [],
+            "optional_clauses": [],
+            "cross_references": [],
+            "related_risks": [],
+            "law_articles": [],
+        }
     try:
         result = service.get_contract_graph(contract_type)
         return result
     except ValueError as e:
-        logger.warning("get_contract_graph: bad request: %s", e)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        # Tanımsız tip — main-server'ın fallback'i çalışsın diye 400 yerine
+        # boş graf dön. Logu warning olarak bırak; istemci sunucuyu hatalı
+        # zannederek tekrar denemesin.
+        logger.warning("get_contract_graph: unknown type, returning empty graph: %s", e)
+        return {
+            "contract_type": contract_type,
+            "display_name": contract_type,
+            "mandatory_clauses": [],
+            "optional_clauses": [],
+            "cross_references": [],
+            "related_risks": [],
+            "law_articles": [],
+        }
     except Exception as e:
         logger.error("get_contract_graph: unexpected failure: %s", e, exc_info=True)
         raise HTTPException(
