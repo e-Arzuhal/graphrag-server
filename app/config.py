@@ -30,7 +30,10 @@ class Settings(BaseSettings):
     app_version: str = "1.0.0"
     debug: bool = False
     internal_api_key: str
+    # Birincil Gemini API anahtarı; quota / 503 / boş yanıt durumunda
+    # gemini_api_key_fallback'e otomatik geçilir.
     gemini_api_key: str = ""
+    gemini_api_key_fallback: str = ""
 
     class Config:
         env_file = str(_ENV_FILE)

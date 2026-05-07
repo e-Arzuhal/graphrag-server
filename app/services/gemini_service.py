@@ -43,6 +43,7 @@ def _loose_json_parse(raw: str) -> Dict:
     return json.loads(cleaned)
 
 _client: genai.Client | None = None
+_fallback_client: genai.Client | None = None
 
 
 def _get_client() -> genai.Client:
@@ -50,6 +51,33 @@ def _get_client() -> genai.Client:
     if _client is None:
         _client = genai.Client(api_key=get_settings().gemini_api_key)
     return _client
+
+
+def _get_fallback_client() -> genai.Client | None:
+    """Birincil API key quota/503 dönerse kullanılacak yedek client."""
+    global _fallback_client
+    fallback_key = get_settings().gemini_api_key_fallback
+    if not fallback_key:
+        return None
+    if _fallback_client is None:
+        _fallback_client = genai.Client(api_key=fallback_key)
+    return _fallback_client
+
+
+def _is_quality_response(result: Dict, missing_required: List[str]) -> bool:
+    """Sonuç anlamlı mı yoksa fallback şablon mu — risks dolu ve TBK ya da
+    explanation içeriyor mu kontrol et. False dönerse yedek API'ye geç."""
+    if not isinstance(result, dict):
+        return False
+    risks = result.get("risks") or []
+    if not risks and missing_required:
+        return False
+    has_real_explanations = any(
+        (r.get("tbk_article") not in (None, 0, "")) or
+        (r.get("explanation") and not str(r.get("explanation", "")).strip().endswith("alanı eksik."))
+        for r in risks if isinstance(r, dict)
+    )
+    return has_real_explanations or not missing_required
 
 # Graph schema injected into every prompt so Gemini understands
 # node/relationship types without querying Neo4j directly.
@@ -174,50 +202,76 @@ async def analyze_with_gemini(
     )
     logger.debug("Gemini prompt length: %d chars", len(prompt))
 
-    try:
-        from google.genai import types as genai_types
-        response = _get_client().models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=genai_types.GenerateContentConfig(
-                # Gemini'yi katı JSON'a kilitle — markdown çiti ve serbest metni engeller
-                response_mime_type="application/json",
-                temperature=0.2,
-            ),
-        )
-        raw = response.text.strip()
-        try:
-            result = _loose_json_parse(raw)
-        except json.JSONDecodeError as parse_err:
-            logger.warning(
-                "Gemini JSON parse failed (%s) — first 240 chars: %r",
-                parse_err, raw[:240],
-            )
-            raise
-        logger.info(
-            "Gemini response OK | risks=%d | compliance_penalty=%.2f",
-            len(result.get("risks", [])), result.get("compliance_penalty", 0.0),
-        )
-        return result
+    from google.genai import types as genai_types
+    config = genai_types.GenerateContentConfig(
+        # Gemini'yi katı JSON'a kilitle — markdown çiti ve serbest metni engeller
+        response_mime_type="application/json",
+        temperature=0.2,
+    )
 
-    except Exception as e:
-        logger.error("Gemini request failed: %s", e, exc_info=True)
-        logger.warning(
-            "Returning fallback HIGH-risk response for %d missing required fields",
-            len(missing_required),
-        )
-        return {
-            "tbk_articles": [],
-            "risks": [
-                {
-                    "field": f,
-                    "risk_level": "HIGH",
-                    "tbk_article": None,
-                    "explanation": f"{f} alanı eksik.",
-                    "suggestion": f"{f} bilgisini ekleyin.",
-                }
-                for f in missing_required
-            ],
-            "general_assessment": "Otomatik analiz tamamlanamadı. Eksik alanları doldurun.",
-            "compliance_penalty": len(missing_required) * 0.15,
-        }
+    def _try_call(client_fn, label: str) -> Dict | None:
+        try:
+            client = client_fn()
+            if client is None:
+                return None
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,
+                config=config,
+            )
+            raw = response.text.strip()
+            try:
+                result = _loose_json_parse(raw)
+            except json.JSONDecodeError as parse_err:
+                logger.warning(
+                    "[%s] Gemini JSON parse failed (%s) — first 240 chars: %r",
+                    label, parse_err, raw[:240],
+                )
+                return None
+            logger.info(
+                "[%s] Gemini response OK | risks=%d | compliance_penalty=%.2f",
+                label, len(result.get("risks", [])), result.get("compliance_penalty", 0.0),
+            )
+            return result
+        except Exception as e:
+            logger.error("[%s] Gemini request failed: %s", label, e)
+            return None
+
+    # 1) Birincil anahtarı dene
+    primary = _try_call(_get_client, "primary")
+    if primary is not None and _is_quality_response(primary, missing_required):
+        return primary
+
+    # 2) Quota/503 ya da düşük kalite → yedek anahtar
+    fallback_client_factory = _get_fallback_client
+    if fallback_client_factory() is not None:
+        logger.warning("Primary Gemini result yetersiz/hata — fallback API key deneniyor")
+        secondary = _try_call(fallback_client_factory, "fallback")
+        if secondary is not None:
+            return secondary
+
+    # 3) Hâlâ yoksa primary'nin (kalitesizse de) sonucunu kullan, son çare olarak
+    # statik fallback üret.
+    if primary is not None:
+        logger.warning("Fallback API başarısız — primary'nin düşük kaliteli yanıtı kullanılıyor")
+        return primary
+
+    logger.warning(
+        "Returning fallback HIGH-risk response for %d missing required fields",
+        len(missing_required),
+    )
+    return {
+        "tbk_articles": [],
+        "risks": [
+            {
+                "field": f,
+                "risk_level": "HIGH",
+                "tbk_article": None,
+                "explanation": f"{f} alanı eksik.",
+                "suggestion": f"{f} bilgisini ekleyin.",
+            }
+            for f in missing_required
+        ],
+        "general_assessment": "Otomatik analiz tamamlanamadı. Eksik alanları doldurun.",
+        "compliance_penalty": len(missing_required) * 0.15,
+    }
