@@ -1,0 +1,39 @@
+# Byte-compiled
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual envs
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test / Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+tests/
+
+# Git
+.git/
+.gitignore
+
+# Local development
+.env
+.env.local
+.env.*
+!.env.example
+
+# Docs (Dockerfile only copies README.md explicitly when needed)
+# *.md kept available for pyproject build
+
+# Data and models
+*.pkl
+*.joblib
+data/
